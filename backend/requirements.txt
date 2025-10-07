@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pymongo
+motor
+python-jose
+passlib[bcrypt]
+bcrypt
+pydantic_settings
+python-multipart
