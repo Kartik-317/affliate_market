@@ -61,7 +61,7 @@ export function ModifyAutoWithdrawalDialog({ onClose, paymentMethods, currentSet
         });
 
         // In a real application, you would make an API call here.
-        // await fetch('http://localhost:8000/payments/auto-withdrawal/update', { ... });
+        // await fetch('/.netlify/functions/proxy/payments/auto-withdrawal/update', { ... });
         await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network delay
 
         // Call the onSave prop with the updated settings

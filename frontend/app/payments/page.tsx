@@ -126,7 +126,7 @@ export default function PaymentsPage() {
     useEffect(() => {
         const fetchStripeConfig = async () => {
             try {
-                const response = await fetch("http://localhost:8000/payments/config");
+                const response = await fetch("/.netlify/functions/proxy/payments/config");
                 if (!response.ok) {
                     throw new Error("Failed to fetch Stripe configuration.");
                 }
@@ -149,7 +149,7 @@ export default function PaymentsPage() {
     useEffect(() => {
         const fetchUnreadCount = async () => {
             try {
-                const response = await fetch("http://localhost:8000/api/affiliate/notifications");
+                const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
                 if (response.ok) {
                     const data = await response.json();
                     const count = data.notifications.filter((n: any) => !n.read).length;
@@ -169,7 +169,7 @@ export default function PaymentsPage() {
     useEffect(() => {
         const fetchInitialData = async () => {
             try {
-                const eventsResponse = await fetch("http://localhost:8000/api/affiliate/events");
+                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events");
                 if (!eventsResponse.ok) {
                     throw new Error("Failed to fetch initial events.");
                 }
@@ -178,7 +178,7 @@ export default function PaymentsPage() {
                 const validEvents = eventsData.events.filter((e: AffiliateEvent) => e.network);
                 setEvents(validEvents);
 
-                const methodsResponse = await fetch("http://localhost:8000/payments/methods"); 
+                const methodsResponse = await fetch("/.netlify/functions/proxy/payments/methods"); 
                 if (methodsResponse.ok) {
                     const methodsData = await methodsResponse.json();
                     

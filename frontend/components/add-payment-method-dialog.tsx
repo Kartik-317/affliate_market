@@ -74,7 +74,7 @@ const handleSubmit = async (e: React.FormEvent) => {
 
         console.log("Sending payment method request:", requestData);
 
-        const response = await fetch("http://localhost:8000/payments/method", {
+        const response = await fetch("/.netlify/functions/proxy/payments/method", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(requestData),
@@ -116,7 +116,7 @@ const handleSubmit = async (e: React.FormEvent) => {
             const payload = { user_id: "test_user_123", code: twoFactorCode }
             console.log("Sending 2FA request:", payload)
 
-            const response = await fetch("http://localhost:8000/payments/method/verify-2fa", {
+            const response = await fetch("/.netlify/functions/proxy/payments/method/verify-2fa", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),

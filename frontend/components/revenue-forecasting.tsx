@@ -62,7 +62,7 @@ export function RevenueForecasting({ events, campaignMetrics }: RevenueForecasti
             setError(null);
             try {
                 // Fetch structured data from the backend endpoint
-                const response = await fetch("http://localhost:8000/api/affiliate/revenue-forecast");
+                const response = await fetch("/.netlify/functions/proxy/api/affiliate/revenue-forecast");
                 
                 if (!response.ok) {
                     // Attempt to parse JSON error message if available

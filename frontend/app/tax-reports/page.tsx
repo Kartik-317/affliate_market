@@ -148,7 +148,7 @@ export default function TaxReportsPage() {
     useEffect(() => {
         async function fetchData() {
             try {
-                const notificationsResponse = await fetch("http://localhost:8000/api/affiliate/notifications")
+                const notificationsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/notifications")
                 if (!notificationsResponse.ok) {
                     throw new Error("Failed to fetch notifications")
                 }
@@ -156,7 +156,7 @@ export default function TaxReportsPage() {
                 const unread = notificationsData.notifications.filter((n: any) => !n.read).length
                 setUnreadCount(unread)
 
-                const eventsResponse = await fetch("http://localhost:8000/api/affiliate/events")
+                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events")
                 if (!eventsResponse.ok) {
                     throw new Error("Failed to fetch events")
                 }
@@ -268,7 +268,7 @@ export default function TaxReportsPage() {
                 formBody.append(key, value);
             });
 
-            const response = await fetch(`http://localhost:8000/api/tax/fill-pdf/${formType}`, {
+            const response = await fetch(`/.netlify/functions/proxy/api/tax/fill-pdf/${formType}`, {
                 method: "POST",
                 body: formBody,
             });
@@ -354,7 +354,7 @@ export default function TaxReportsPage() {
                 }
             });
 
-            const response = await fetch("http://localhost:8000/api/tax/fill-pdf/w9", {
+            const response = await fetch("/.netlify/functions/proxy/api/tax/fill-pdf/w9", {
                 method: "POST",
                 body: formBody,
             });

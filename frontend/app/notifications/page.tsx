@@ -139,7 +139,7 @@ export default function NotificationsPage() {
 
   const fetchNotifications = useCallback(async () => {
     try {
-      const response = await fetch("http://localhost:8000/api/affiliate/notifications");
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
       if (!response.ok) {
         throw new Error("Failed to fetch notifications.");
       }
@@ -178,7 +178,7 @@ export default function NotificationsPage() {
 
   const markAsRead = async (notificationIds: string[]) => {
     try {
-      const response = await fetch("http://localhost:8000/api/affiliate/notifications/mark-read", {
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications/mark-read", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

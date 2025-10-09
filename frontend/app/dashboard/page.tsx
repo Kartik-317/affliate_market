@@ -132,7 +132,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchUnreadCount = async () => {
       try {
-        const response = await fetch("http://localhost:8000/api/affiliate/notifications");
+        const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
         if (response.ok) {
           const data = await response.json();
           const count = data.notifications.filter((n: any) => !n.read).length;
@@ -228,7 +228,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const response = await fetch("http://localhost:8000/api/affiliate/events");
+        const response = await fetch("/.netlify/functions/proxy/api/affiliate/events");
         if (!response.ok) {
           throw new Error("Failed to fetch initial data.");
         }

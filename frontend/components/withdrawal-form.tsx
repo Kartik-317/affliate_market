@@ -42,7 +42,7 @@ export function WithdrawalForm({ availableBalance, paymentMethods, onClose, onWi
     });
 
     try {
-      const response = await fetch("http://localhost:8000/payments/withdraw", {
+      const response = await fetch("/.netlify/functions/proxy/payments/withdraw", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

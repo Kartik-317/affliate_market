@@ -142,7 +142,7 @@ export default function AnalyticsPage() {
     useEffect(() => {
         const fetchOptimizationSuggestions = async () => {
             try {
-                const response = await fetch("http://localhost:8000/api/affiliate/optimization-suggestions");
+                const response = await fetch("/.netlify/functions/proxy/api/affiliate/optimization-suggestions");
                 if (!response.ok) {
                     throw new Error(`Failed to fetch optimization suggestions: ${response.statusText}`);
                 }
@@ -233,7 +233,7 @@ const processEvents = (events: AffiliateEvent[]) => {
     useEffect(() => {
         const fetchInitialData = async () => {
             try {
-                const eventsResponse = await fetch("http://localhost:8000/api/affiliate/events")
+                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events")
                 if (!eventsResponse.ok) {
                     throw new Error("Failed to fetch initial events.")
                 }
