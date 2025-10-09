@@ -279,7 +279,7 @@ const processEvents = (events: AffiliateEvent[]) => {
         const websockets: WebSocket[] = []
 
         connectedNetworks.forEach((network) => {
-            const websocket = new WebSocket(`ws://localhost:8000/api/affiliate/ws/${network.id}-events`)
+            const websocket = new WebSocket(`ws://144.126.253.174:8083/api/affiliate/ws/${network.id}-events`)
             websockets.push(websocket)
 
             websocket.onopen = () => {
