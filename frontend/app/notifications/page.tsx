@@ -330,7 +330,6 @@ export default function NotificationsPage() {
                   <p className="text-sm font-medium text-muted-foreground">Commissions</p>
                   <p className="text-2xl font-bold">{notifications.filter((n) => n.type === "commission").length}</p>
                 </div>
-                <DollarSign className="w-8 h-8 text-green-500/60" />
               </div>
             </CardContent>
           </Card>
@@ -342,7 +341,6 @@ export default function NotificationsPage() {
                   <p className="text-sm font-medium text-muted-foreground">Payments</p>
                   <p className="text-2xl font-bold">{notifications.filter((n) => n.type === "payout").length}</p>
                 </div>
-                <DollarSign className="w-8 h-8 text-blue-500/60" />
               </div>
             </CardContent>
           </Card>

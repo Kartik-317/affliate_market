@@ -37,9 +37,7 @@ export function DashboardLayout({ children, unreadCount = 0 }: DashboardLayoutPr
     { name: "Analytics", href: "/analytics", icon: TrendingUp },
     { name: "Notifications", href: "/notifications", icon: Bell },
     { name: "Payments", href: "/payments", icon: CreditCard },
-    { name: "Tax Documentation", href: "/tax", icon: FileText },
     { name: "Tax Reports", href: "/tax-reports", icon: FileText },
-    { name: "Optimization", href: "/optimization", icon: Zap },
   ]
 
   return (
