@@ -31,7 +31,7 @@ interface RevenueForecastResponse {
     riskFactors: string[];
 }
 
-// Minimal interfaces for component props compatibility (data is now fetched internally)
+// Minimal interfaces for component props compatibility
 interface AffiliateEvent {
     event: string;
     network: string;
@@ -49,24 +49,45 @@ interface CampaignMetrics {
 interface RevenueForecastingProps {
     events: AffiliateEvent[]; 
     campaignMetrics: { [key: string]: CampaignMetrics };
+    // --- NEW PROP: accessToken is required for authenticated fetch ---
+    accessToken: string | null; 
 }
 
-export function RevenueForecasting({ events, campaignMetrics }: RevenueForecastingProps) {
+export function RevenueForecasting({ events, campaignMetrics, accessToken }: RevenueForecastingProps) {
     const [forecastState, setForecastState] = useState<RevenueForecastResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         const fetchForecastData = async () => {
+            // --- CHECK FOR ACCESS TOKEN ---
+            if (!accessToken) {
+                setLoading(false);
+                setError("Authentication token is missing. Cannot fetch forecast.");
+                return;
+            }
+            
             setLoading(true);
             setError(null);
             try {
                 // Fetch structured data from the backend endpoint
-                const response = await fetch("/.netlify/functions/proxy/api/affiliate/revenue-forecast");
+                const response = await fetch("/.netlify/functions/proxy/api/affiliate/revenue-forecast", {
+                    // --- ADD AUTHORIZATION HEADER ---
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                });
                 
                 if (!response.ok) {
-                    // Attempt to parse JSON error message if available
                     const errorText = await response.text();
+                    console.error("Fetch failed with status:", response.status, "Response:", errorText); 
+
+                    if (response.status === 401) {
+                         // Specific handling for 401 to suggest re-login
+                        throw new Error("Unauthorized. Your session may have expired. Please refresh the page.");
+                    }
+
                     try {
                         const errorData = JSON.parse(errorText);
                         throw new Error(errorData.detail || `Server error: ${response.status}`);
@@ -87,8 +108,11 @@ export function RevenueForecasting({ events, campaignMetrics }: RevenueForecasti
             }
         };
 
-        fetchForecastData();
-    }, []); 
+        // Only run fetch when accessToken is available
+        if (accessToken) {
+            fetchForecastData();
+        }
+    }, [accessToken]); // Dependency added: accessToken
 
     const getConfidenceBadge = (confidence: number) => {
         if (confidence >= 90) {
@@ -132,9 +156,9 @@ export function RevenueForecasting({ events, campaignMetrics }: RevenueForecasti
                     <CardDescription>We couldn't generate the revenue forecast.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <div className="flex items-center space-x-3 text-red-500">
-                        <AlertCircle className="w-5 h-5" />
-                        <p className="text-sm font-mono break-all">{error || "No forecast data available."}</p>
+                    <div className="flex items-start space-x-3 text-red-500">
+                        <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                        <p className="text-sm font-mono break-words">{error || "No forecast data available."}</p>
                     </div>
                     <Button onClick={() => window.location.reload()} className="mt-4">
                         Try Reloading

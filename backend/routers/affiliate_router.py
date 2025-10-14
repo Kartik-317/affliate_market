@@ -1,3 +1,4 @@
+# routers/affiliate_router.py
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from pydantic import BaseModel
@@ -5,19 +6,18 @@ import asyncio
 import random
 from datetime import datetime
 from bson import ObjectId
-# Assuming services.notification_service and db.database exist
 from services.notification_service import NotificationService
 from db.database import get_db
 from pymongo.database import Database
 from langchain_groq import ChatGroq
-# Assuming config.settings exists
 from config.settings import Settings
 import json
 import logging
 import re
 import math
-# Added import for date calculation
 from dateutil.relativedelta import relativedelta
+from jose import jwt, JWTError
+from fastapi.security import OAuth2PasswordBearer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -26,12 +26,13 @@ logger = logging.getLogger(__name__)
 # --- Initialization & Setup ---
 router = APIRouter(prefix="/api/affiliate", tags=["affiliate"])
 settings = Settings()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 class MarkAsReadRequest(BaseModel):
     notification_ids: List[str]
 
 class WebSocketConfig(BaseModel):
-    frequency: int = 50000
+    frequency: int = 50000  # Reduced for faster testing
     networks: List[str] = None
 
 # Define models for API response
@@ -44,7 +45,6 @@ class OptimizationSuggestion(BaseModel):
     estimatedRevenue: float
     effort: str
 
-# New Pydantic Models for Revenue Forecasting
 class ForecastMonth(BaseModel):
     month: str
     predicted: int
@@ -85,10 +85,9 @@ products = [
     {"name": "LED Desk Lamp", "weight": 10}
 ]
 
-# 💡 NEW: Define payment method IDs matching the frontend for mock consistency
 payment_method_ids = ["1", "2", "3", "4"]
 
-# ---- Utility Functions (Condensed for full code display) ----
+# ---- Utility Functions ----
 def weighted_random(items):
     total = sum(item["weight"] for item in items)
     r = random.uniform(0, total)
@@ -96,54 +95,70 @@ def weighted_random(items):
         if r < item["weight"]: return item["name"]
         r -= item["weight"]
     return items[-1]["name"]
-    
-async def generate_event(network_name: str, db: Database):
-    # This is a mock data generator, simplified for display
-    # Ensure all possible choices are handled, or return a default event type
+
+async def get_user_from_token(token: str, db: Database) -> Dict[str, Any]:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token: No email found")
+        user = await db.get_collection("users").find_one({"email": email})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+async def generate_event(network_name: str, db: Database, tenant_id: str):
     chosen_type = random.choice(["impression"] * 5 + ["click"] * 2 + ["conversion", "commission", "payout"])
     now = datetime.now().isoformat()
     campaign = weighted_random(campaigns)
     product = weighted_random(products)
 
+    event_data = {
+        "tenantId": tenant_id,
+        "event": chosen_type,
+        "network": network_name,
+        "campaign": campaign,
+        "product": product,
+        "date": now
+    }
+
     if chosen_type == "commission":
-        return {"event": "commission", "network": network_name, "campaign": campaign, "product": product, "amount": round(random.uniform(5, 55), 2), "orderId": f"{network_name[:3].upper()}{random.randint(0, 999999)}", "date": now}
+        event_data["amount"] = round(random.uniform(5, 55), 2)
+        event_data["orderId"] = f"{network_name[:3].upper()}{random.randint(0, 999999)}"
     elif chosen_type == "click":
-        return {"event": "click", "network": network_name, "campaign": campaign, "product": product, "clicks": random.randint(1, 100), "date": now}
+        event_data["clicks"] = random.randint(1, 100)
     elif chosen_type == "conversion":
-        return {"event": "conversion", "network": network_name, "campaign": campaign, "product": product, "commissionAmount": round(random.uniform(10, 80), 2), "orderId": f"{network_name[:3].upper()}{random.randint(0, 999999)}", "date": now}
+        event_data["commissionAmount"] = round(random.uniform(10, 80), 2)
+        event_data["orderId"] = f"{network_name[:3].upper()}{random.randint(0, 999999)}"
     elif chosen_type == "payout":
-        # 💡 FIX: Added paymentMethodId and made amount negative for withdrawal
-        return {"event": "payout", "network": network_name, "amount": round(random.uniform(100, 500), 2) * -1, "status": random.choice(["Completed", "Pending", "Failed"]), "date": now, "paymentMethodId": random.choice(payment_method_ids)}
+        event_data["amount"] = round(random.uniform(100, 500), 2) * -1
+        event_data["status"] = random.choice(["Completed", "Pending", "Failed"])
+        event_data["paymentMethodId"] = random.choice(payment_method_ids)
     elif chosen_type == "impression":
-        return {"event": "impression", "network": network_name, "campaign": campaign, "product": product, "impressions": random.randint(100, 1000), "date": now}
-        
-    # Fallback to prevent returning an empty dictionary, though should be unreachable now
-    return {"event": "unknown", "network": network_name, "message": "unhandled mock event", "date": now}
+        event_data["impressions"] = random.randint(100, 1000)
+
+    return event_data
 
 def generate_notification_message(event: dict) -> str:
-    # Notification message generator, simplified for display
-    # 👇 FIX 1: Add Campaign/Product to COMMISSION message
     if event.get("event") == "commission" and event.get("amount") is not None:
         return (
             f"New commission of ${event['amount']} from {event['network']} "
             f"for '{event.get('product', 'N/A')}' (Campaign: {event.get('campaign', 'N/A')})"
         )
-    # 👇 FIX 2: Add Campaign/Product to CONVERSION message
     elif event.get("event") == "conversion" and event.get("commissionAmount") is not None:
         return (
             f"New conversion commission of ${event['commissionAmount']} from {event['network']} "
             f"for '{event.get('product', 'N/A')}' (Campaign: {event.get('campaign', 'N/A')})"
         )
     elif event.get("event") == "payout" and event.get("amount") is not None:
-        # 💡 FIX: Use absolute value for display in notification
         return f"Payout of ${abs(event['amount'])} completed from {event['network']}"
-    # 👇 FIX 3: Add Campaign/Product to CLICK message
     elif event.get("event") == "click" and event.get("clicks") is not None:
         return (
             f"Traffic spike: {event['clicks']} clicks on '{event.get('product', 'N/A')}' "
             f"(Campaign: {event.get('campaign', 'N/A')}) from {event['network']}"
         )
-    # 👇 FIX 4: Add Campaign/Product to IMPRESSION message
     elif event.get("event") == "impression" and event.get("impressions") is not None:
         return (
             f"Ad visibility: {event['impressions']} impressions recorded for '{event.get('product', 'N/A')}' "
@@ -152,23 +167,19 @@ def generate_notification_message(event: dict) -> str:
     
     return f"Unknown event from {event.get('network', 'an unknown source')}"
 
-# ---- New Revenue Forecasting Logic (Ported from Frontend) ----
-
-async def fetch_all_events(db: Database) -> List[Dict[str, Any]]:
-    """Fetches all relevant events from the database."""
+# ---- Revenue Forecasting Logic ----
+async def fetch_all_events(db: Database, tenant_id: str) -> List[Dict[str, Any]]:
     events = []
-    # Fetch events only needed for analysis
     cursor = db.get_collection("data").find({
-        "event": {"$in": ["commission", "conversion", "click", "payout"]} # Include payout here for analysis
-    }).sort("date", 1) 
+        "tenantId": tenant_id,
+        "event": {"$in": ["commission", "conversion", "click", "payout"]}
+    }).sort("date", 1)
     async for event in cursor:
-        # Convert ObjectId to string for JSON compatibility before passing to calculation
         if "_id" in event: event["_id"] = str(event["_id"])
         events.append(event)
     return events
 
 def calculate_campaign_metrics(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
-    """Calculates revenue, commissions, clicks, and conversion rates for all campaigns."""
     campaign_metrics: Dict[str, Dict[str, float]] = {c['name']: {"revenue": 0.0, "commissions": 0.0, "clicks": 0.0} for c in campaigns}
     campaign_clicks: Dict[str, int] = {c['name']: 0 for c in campaigns}
 
@@ -201,8 +212,6 @@ def calculate_campaign_metrics(events: List[Dict[str, Any]]) -> Dict[str, Dict[s
     return final_metrics
 
 def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metrics: Dict[str, Dict[str, float]]) -> RevenueForecastResponse:
-    
-    # 1. Calculate historical monthly revenues
     monthly_data: Dict[str, float] = {}
     for event in events:
         if event.get("event") in ["commission", "conversion"] and event.get("date"):
@@ -215,7 +224,6 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
             except Exception:
                 pass
 
-    # 2. Calculate average monthly revenue and growth rate
     revenues = list(monthly_data.values())
     sorted_months = sorted(monthly_data.keys())
     
@@ -231,12 +239,10 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
             growth_count += 1
     monthly_growth_rate = total_growth / growth_count if growth_count > 0 else 0
 
-    # 3. Generate 6-month forecast
     forecasts: List[Dict[str, Any]] = []
     start_date = datetime.now().replace(day=1) + relativedelta(months=1)
     last_revenue = average_monthly_revenue if average_monthly_revenue > 0 else 1000
     
-    # Confidence calculation
     mean = sum(revenues) / len(revenues) if len(revenues) > 0 else 0
     variance = sum(math.pow(r - mean, 2) for r in revenues) / len(revenues) if len(revenues) > 0 else 0
     std_dev = math.sqrt(variance)
@@ -256,7 +262,6 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
         })
         last_revenue = predicted
 
-    # 4. Generate scenario planning
     base_revenue = average_monthly_revenue if average_monthly_revenue > 0 else 1000
     conservative_growth = max(0, monthly_growth_rate * 0.5)
     optimistic_growth = monthly_growth_rate * 1.0 
@@ -265,7 +270,6 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
     def calculate_quarterly(growth_rate: float):
         quarterly_projections = []
         for i in range(4):
-            # This logic mimics the simple frontend growth calculation
             monthly_proj = base_revenue * math.pow((1 + growth_rate / 100), i)
             quarterly_projections.append(round(monthly_proj * 3))
         return quarterly_projections
@@ -290,7 +294,6 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
             "probability": s["probability"],
         })
 
-    # 5. Generate key factors
     sorted_campaigns = sorted(
         campaign_metrics.items(),
         key=lambda item: item[1]['revenue'],
@@ -307,7 +310,6 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
         for name, metrics in sorted_campaigns[-2:] if len(sorted_campaigns) > 2
     ] or ["Insufficient data to identify risks"]
 
-
     return RevenueForecastResponse(
         forecastData=forecasts,
         scenarios=final_scenarios,
@@ -316,32 +318,31 @@ def calculate_forecast_and_scenarios(events: List[Dict[str, Any]], campaign_metr
     )
 
 # --- Endpoints ---
-
 @router.get("/revenue-forecast", response_model=RevenueForecastResponse)
-async def get_revenue_forecast(db: Database = Depends(get_db)):
-    """
-    Generates a 6-month revenue forecast and scenario planning based on historical data.
-    """
+async def get_revenue_forecast(token: str = Depends(oauth2_scheme), db: Database = Depends(get_db)):
     try:
-        events = await fetch_all_events(db)
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user: No tenantId")
+        events = await fetch_all_events(db, tenant_id)
         campaign_metrics = calculate_campaign_metrics(events)
         forecast_data = calculate_forecast_and_scenarios(events, campaign_metrics)
         return forecast_data
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"Error generating revenue forecast: {str(e)}")
-        # Return a structured error response
         raise HTTPException(status_code=500, detail=f"Failed to generate revenue forecast: {str(e)}")
 
-# --- Original Endpoints (Unchanged logic for Optimization & Events) ---
-async def generate_optimization_suggestions(db: Database) -> List[OptimizationSuggestion]:
+async def generate_optimization_suggestions(db: Database, tenant_id: str) -> List[OptimizationSuggestion]:
     llm = ChatGroq(
         api_key=settings.GROQ_API_KEY,
         model_name="llama-3.3-70b-versatile",
         temperature=0.7
     )
 
-    campaign_metrics = calculate_campaign_metrics(await fetch_all_events(db))
-    # Only expose revenue, commissions, clicks, and conversionRate
+    campaign_metrics = calculate_campaign_metrics(await fetch_all_events(db, tenant_id))
     metrics_for_prompt = {
         name: {k: v for k, v in metrics.items() if k in ["revenue", "commissions", "clicks", "conversionRate"]}
         for name, metrics in campaign_metrics.items()
@@ -364,7 +365,6 @@ async def generate_optimization_suggestions(db: Database) -> List[OptimizationSu
         response = await llm.ainvoke(prompt)
         logger.info(f"Raw Groq response: {response.content}")
 
-        # Corrected Regex: Extract JSON array from the response
         json_match = re.search(r'\[[\s\S]*?\]', response.content, re.DOTALL)
         if not json_match:
             logger.error("No valid JSON array found in Groq response")
@@ -380,7 +380,6 @@ async def generate_optimization_suggestions(db: Database) -> List[OptimizationSu
         validated_suggestions = []
         for idx, suggestion in enumerate(suggestions):
             try:
-                # Use strict validation against the Pydantic model
                 validated_suggestion = OptimizationSuggestion(**suggestion)
                 validated_suggestions.append(validated_suggestion)
             except Exception as e:
@@ -398,11 +397,14 @@ async def generate_optimization_suggestions(db: Database) -> List[OptimizationSu
         logger.error(f"Error generating optimization suggestions: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate optimization suggestions: {str(e)}")
 
-
 @router.get("/optimization-suggestions")
-async def get_optimization_suggestions(db: Database = Depends(get_db)):
+async def get_optimization_suggestions(token: str = Depends(oauth2_scheme), db: Database = Depends(get_db)):
     try:
-        suggestions = await generate_optimization_suggestions(db)
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user: No tenantId")
+        suggestions = await generate_optimization_suggestions(db, tenant_id)
         return {"suggestions": suggestions}
     except HTTPException as e:
         raise e
@@ -410,22 +412,36 @@ async def get_optimization_suggestions(db: Database = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to generate optimization suggestions: {str(e)}")
 
 @router.get("/events")
-async def get_all_events(db: Database = Depends(get_db)):
+async def get_all_events(token: str = Depends(oauth2_scheme), db: Database = Depends(get_db)):
     try:
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user: No tenantId")
+
         all_events = []
-        async for event in db.get_collection("data").find().sort("date", -1):
+        async for event in db.get_collection("data").find({"tenantId": tenant_id}).sort("date", -1):
             if "_id" in event:
                 event["_id"] = str(event["_id"])
             all_events.append(event)
         return {"events": all_events}
+    except HTTPException as e:
+        raise e
     except Exception as e:
+        logger.error(f"Error fetching events: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 @router.get("/notifications")
-async def get_all_notifications(db: Database = Depends(get_db)):
+async def get_all_notifications(token: str = Depends(oauth2_scheme), db: Database = Depends(get_db)):
     try:
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user: No tenantId")
+
         notifications_collection = db.get_collection("notifications")
         notifications = []
-        async for notification in notifications_collection.find({"user_id": "user_id_from_token"}).sort("created_at", -1):
+        async for notification in notifications_collection.find({"tenantId": tenant_id}).sort("created_at", -1):
             notification["_id"] = str(notification["_id"])
             if "read" not in notification:
                 notification["read"] = False
@@ -433,22 +449,55 @@ async def get_all_notifications(db: Database = Depends(get_db)):
                 notification["created_at"] = notification["created_at"].isoformat()
             notifications.append(notification)
         return {"notifications": notifications}
+    except HTTPException as e:
+        raise e
     except Exception as e:
+        logger.error(f"Error fetching notifications: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @router.websocket("/ws/{network_name}-events")
 async def websocket_network_events(websocket: WebSocket, network_name: str, db: Database = Depends(get_db)):
     await websocket.accept()
-    # Instantiate NotificationService here, as done in the example you provided
     notification_service = NotificationService(db)
-    user_id = "user_id_from_token"
     
-    # Initialize config
+    try:
+        data = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
+        token = data.get("token")
+        if not token:
+            logger.error(f"No token provided for {network_name} WebSocket")
+            await websocket.send_json({"error": "No token provided"})
+            await websocket.close(code=4001)
+            return
+
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            logger.error(f"No tenantId found for user in {network_name} WebSocket")
+            await websocket.send_json({"error": "Invalid user: No tenantId"})
+            await websocket.close(code=4001)
+            return
+        user_id = str(user.get("_id", "user_id_from_token"))
+        logger.info(f"WebSocket authenticated for {network_name} with tenantId: {tenant_id}")
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout waiting for token in {network_name} WebSocket")
+        await websocket.send_json({"error": "No token received within timeout"})
+        await websocket.close(code=4001)
+        return
+    except HTTPException as e:
+        logger.error(f"Token validation failed for {network_name}: {e.detail}")
+        await websocket.send_json({"error": str(e.detail)})
+        await websocket.close(code=4001)
+        return
+    except Exception as e:
+        logger.error(f"Unexpected error in {network_name} WebSocket authentication: {str(e)}")
+        await websocket.send_json({"error": "Unexpected authentication error"})
+        await websocket.close(code=4001)
+        return
+
     config = WebSocketConfig(frequency=50000, networks=[network_name])
 
     try:
         while True:
-            # 1. Handle incoming config updates
             try:
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
                 if "config" in data:
@@ -456,18 +505,14 @@ async def websocket_network_events(websocket: WebSocket, network_name: str, db: 
                     if client_config.get("frequency", 0) >= 1000:
                         config.frequency = client_config["frequency"]
                     
-                    # Update networks config if provided by client (optional, based on your reference)
                     valid_networks = client_config.get("networks")
                     if valid_networks is not None and network_name in valid_networks:
                         config.networks = valid_networks
-
             except asyncio.TimeoutError:
-                pass # No config update received
+                pass
 
-            # 2. Generate and store event
-            event_data = await generate_event(network_name, db)
+            event_data = await generate_event(network_name, db, tenant_id)
             
-            # Basic validation
             if not event_data or not event_data.get("event"):
                 logger.warning(f"Skipping empty or invalid event for {network_name}")
                 await asyncio.sleep(config.frequency / 1000)
@@ -476,25 +521,25 @@ async def websocket_network_events(websocket: WebSocket, network_name: str, db: 
             inserted_event = await db.get_collection("data").insert_one(event_data)
             full_event = await db.get_collection("data").find_one({"_id": inserted_event.inserted_id})
             
-            if full_event and "_id" in full_event: full_event["_id"] = str(full_event["_id"])
+            if full_event and "_id" in full_event: 
+                full_event["_id"] = str(full_event["_id"])
 
-            # 3. Create rich notification document (similar to your reference code)
             notification_message = generate_notification_message(event_data)
 
             new_notification = {
                 "user_id": user_id,
                 "message": notification_message,
                 "type": event_data["event"],
-                "network": event_data["network"],  # Explicitly captured network
+                "network": event_data["network"],
                 "amount": event_data.get("amount"),
                 "clicks": event_data.get("clicks"),
                 "status": event_data.get("status"),
-                "paymentMethodId": event_data.get("paymentMethodId"), # Captured payment ID
+                "paymentMethodId": event_data.get("paymentMethodId"),
                 "created_at": datetime.now(),
-                "read": False
+                "read": False,
+                "tenantId": tenant_id
             }
             
-            # 4. Insert notification
             inserted_notification = await db.get_collection("notifications").insert_one(new_notification)
             full_notification = await db.get_collection("notifications").find_one({"_id": inserted_notification.inserted_id})
             
@@ -503,37 +548,39 @@ async def websocket_network_events(websocket: WebSocket, network_name: str, db: 
                 if "created_at" in full_notification and isinstance(full_notification["created_at"], datetime):
                     full_notification["created_at"] = full_notification["created_at"].isoformat()
 
-            # 5. Use NotificationService (The service call is commented out as it likely relies on an external/mocked class)
-            # await notification_service.create_notification(user_id, notification_message, event_data["event"])
-            
-            # 6. Send combined event and notification data
             combined_data = {"event": full_event, "notification": full_notification}
             await websocket.send_json(combined_data)
+            logger.info(f"Sent event for {network_name}: {event_data['event']} (tenantId: {tenant_id})")
 
-            # 7. Sleep based on config frequency (convert ms to seconds)
             await asyncio.sleep(config.frequency / 1000)
-
     except WebSocketDisconnect:
         logger.info(f"Client disconnected from {network_name}: {websocket.client}")
     except Exception as e:
         logger.error(f"Error in WebSocket for {network_name}: {e}")
-        # Send error message to client
         try:
             await websocket.send_json({"error": f"An unexpected error occurred: {str(e)}"})
         except WebSocketDisconnect:
-            pass # Client already disconnected
+            pass
+        await websocket.close(code=1000)
 
 @router.post("/notifications/mark-read")
-async def mark_notifications_as_read(request: MarkAsReadRequest, db: Database = Depends(get_db)):
+async def mark_notifications_as_read(request: MarkAsReadRequest, token: str = Depends(oauth2_scheme), db: Database = Depends(get_db)):
     try:
-        user_id = "user_id_from_token"
+        user = await get_user_from_token(token, db)
+        tenant_id = user.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid user: No tenantId")
         result = await db.get_collection("notifications").update_many(
-            {"_id": {"$in": [ObjectId(id) for id in request.notification_ids]}, "user_id": user_id},
+            {"_id": {"$in": [ObjectId(id) for id in request.notification_ids]}, "tenantId": tenant_id},
             {"$set": {"read": True}}
         )
         return {"message": f"{result.modified_count} notifications marked as read."}
+    except HTTPException as e:
+        raise e
     except Exception as e:
+        logger.error(f"Error marking notifications as read: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 @router.get("/")
 async def root():
     return {"message": "Affiliate Command Center Real-Time Mock API Server Running"}

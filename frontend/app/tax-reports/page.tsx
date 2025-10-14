@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation" // Import useRouter for redirection
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -89,7 +90,7 @@ export default function TaxReportsPage() {
     const [activeTab, setActiveTab] = useState("overview")
     const [selectedYear, setSelectedYear] = useState("2025")
     const [unreadCount, setUnreadCount] = useState(0)
-    // New state for the Network Action Dialog
+    const [accessToken, setAccessToken] = useState<string | null>(null) // State for access token
     const [showNetworkDialog, setShowNetworkDialog] = useState(false)
     const [selectedComplianceAction, setSelectedComplianceAction] = useState<ComplianceItem | null>(null)
     const [selectedNetworkUrl, setSelectedNetworkUrl] = useState<string>("")
@@ -122,6 +123,23 @@ export default function TaxReportsPage() {
     const [isSignatureDialogOpen, setIsSignatureDialogOpen] = useState(false)
     const signatureRef = useRef<SignatureCanvas>(null)
     const { toast } = useToast()
+    const router = useRouter() // Initialize router for redirection
+
+    // Fetch access token from localStorage when component mounts
+    useEffect(() => {
+        const token = localStorage.getItem('accessToken')
+        if (token) {
+            setAccessToken(token)
+        } else {
+            // Redirect to login if no token is found
+            toast({
+                title: "Authentication Required",
+                description: "Please log in to access this page.",
+                variant: "destructive",
+            })
+            router.replace('/onboarding') // Redirect to onboarding/login page
+        }
+    }, [router, toast])
 
     // Function to handle the click on the "Action" button in the checklist
     const handleActionClick = (item: ComplianceItem) => {
@@ -132,7 +150,7 @@ export default function TaxReportsPage() {
 
     // Function to handle network selection and immediate redirection
     const handleNetworkSelectAndRedirect = (url: string) => {
-        setSelectedNetworkUrl(url); // Store the URL for immediate action
+        setSelectedNetworkUrl(url)
         if (url) {
             window.open(url, "_blank")
             setShowNetworkDialog(false)
@@ -143,31 +161,50 @@ export default function TaxReportsPage() {
         }
     }
 
-
     // Fetch unread count and network events for tax calculations
     useEffect(() => {
         async function fetchData() {
+            if (!accessToken) {
+                return // Skip fetching if no token is available
+            }
+
             try {
-                const notificationsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/notifications")
+                // Fetch notifications
+                const notificationsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/notifications", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`, // Include access token
+                    },
+                })
                 if (!notificationsResponse.ok) {
+                    if (notificationsResponse.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token")
+                    }
                     throw new Error("Failed to fetch notifications")
                 }
                 const notificationsData = await notificationsResponse.json()
                 const unread = notificationsData.notifications.filter((n: any) => !n.read).length
                 setUnreadCount(unread)
 
-                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events")
+                // Fetch events
+                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`, // Include access token
+                    },
+                })
                 if (!eventsResponse.ok) {
+                    if (eventsResponse.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token")
+                    }
                     throw new Error("Failed to fetch events")
                 }
                 const eventsData = await eventsResponse.json()
 
-                // FIX: Calculate totalIncome using both commission and conversion amounts
+                // Calculate totalIncome using both commission and conversion amounts
                 const totalIncome = eventsData.events
                     .filter((event: any) => event.event === "commission" || event.event === "conversion")
                     .reduce((sum: number, event: any) => {
-                        const amount = event.commissionAmount ?? event.amount; // Use commissionAmount first, then fall back to amount
-                        return typeof amount === "number" ? sum + amount : sum;
+                        const amount = event.commissionAmount ?? event.amount
+                        return typeof amount === "number" ? sum + amount : sum
                     }, 0)
 
                 const estimatedTax = totalIncome * 0.25
@@ -184,57 +221,71 @@ export default function TaxReportsPage() {
                     quarterlyPayments,
                     remainingTax,
                 }))
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching data:", error)
                 toast({
                     title: "Error",
-                    description: "Failed to fetch tax data. Please try again.",
+                    description: error.message === "Unauthorized: Invalid or expired token"
+                        ? "Your session has expired. Please log in again."
+                        : "Failed to fetch tax data. Please try again.",
                     variant: "destructive",
                 })
+                if (error.message === "Unauthorized: Invalid or expired token") {
+                    localStorage.removeItem('accessToken') // Clear invalid token
+                    router.replace('/onboarding') // Redirect to login
+                }
             }
         }
         fetchData()
-    }, [toast])
+    }, [accessToken, toast, router])
 
     async function handleFillForm(formType: string) {
-        let formData: Record<string, string | Blob> = {};
+        if (!accessToken) {
+            toast({
+                title: "Authentication Required",
+                description: "Please log in to generate forms.",
+                variant: "destructive",
+            })
+            router.replace('/onboarding')
+            return
+        }
+
+        let formData: Record<string, string | Blob> = {}
 
         // Prepare form data based on form type
         switch (formType) {
             case "w9":
-                setIsSignatureDialogOpen(true);
-                return; // Signature handled separately
+                setIsSignatureDialogOpen(true)
+                return
             case "1040":
-                const [firstName, ...lastNameParts] = taxData.profile.filingName.split(" ");
-                const lastName = lastNameParts.join(" ");
+                const [firstName, ...lastNameParts] = taxData.profile.filingName.split(" ")
+                const lastName = lastNameParts.join(" ")
 
                 // Split city, state, zip
-                const cityStateZipMatch = taxData.profile.cityStateZip.match(/^(.*),\s*([A-Z]{2})\s*(\d{5})$/);
-                const city = cityStateZipMatch ? cityStateZipMatch[1] : "";
-                const state = cityStateZipMatch ? cityStateZipMatch[2] : "";
-                const zip = cityStateZipMatch ? cityStateZipMatch[3] : "";
+                const cityStateZipMatch = taxData.profile.cityStateZip.match(/^(.*),\s*([A-Z]{2})\s*(\d{5})$/)
+                const city = cityStateZipMatch ? cityStateZipMatch[1] : ""
+                const state = cityStateZipMatch ? cityStateZipMatch[2] : ""
+                const zip = cityStateZipMatch ? cityStateZipMatch[3] : ""
 
                 formData = {
-                    f1_04: firstName, // First name + middle initial
-                    f1_05: lastName, // Last name
+                    f1_04: firstName,
+                    f1_05: lastName,
                     f1_06: taxData.profile.tin,
-                    f1_10: taxData.profile.address, // Street address
-                    f1_12: city, // City
-                    f1_13: state, // State
+                    f1_10: taxData.profile.address,
+                    f1_12: city,
+                    f1_13: state,
                     f1_14: zip,
-                    "c1_3[0]": "1", // ZIP - placeholder index based on typical PDF forms
-                };
-                break;
-
-
+                    "c1_3[0]": "1",
+                }
+                break
             case "1040-es":
                 formData = {
                     f1_01: taxData.profile.filingName,
                     f1_07: taxData.profile.address,
                     f1_08: taxData.profile.cityStateZip,
-                    f2_1: String(taxData.estimatedTax), // Example: Estimated tax amount
-                };
-                break;
+                    f2_1: String(taxData.estimatedTax),
+                }
+                break
             case "4868":
                 formData = {
                     f1_01: taxData.profile.filingName,
@@ -243,91 +294,113 @@ export default function TaxReportsPage() {
                     f1_11: taxData.profile.tin.split("-")[0],
                     f1_12: taxData.profile.tin.split("-")[1],
                     f1_13: taxData.profile.tin.split("-")[2],
-                };
-                break;
+                }
+                break
             case "8829":
                 formData = {
                     f1_01: taxData.profile.filingName,
                     f1_07: taxData.profile.address,
                     f1_08: taxData.profile.cityStateZip,
-                    f2_1: String(taxData.deductions), // Example: Deduction amount
-                };
-                break;
+                    f2_1: String(taxData.deductions),
+                }
+                break
             default:
                 toast({
                     title: "Error",
                     description: `Form type ${formType} not supported.`,
                     variant: "destructive",
-                });
-                return;
+                })
+                return
         }
 
         try {
-            const formBody = new FormData();
+            const formBody = new FormData()
             Object.entries(formData).forEach(([key, value]) => {
-                formBody.append(key, value);
-            });
+                formBody.append(key, value)
+            })
 
             const response = await fetch(`/.netlify/functions/proxy/api/tax/fill-pdf/${formType}`, {
                 method: "POST",
+                headers: {
+                    Authorization: `Bearer ${accessToken}`, // Include access token
+                },
                 body: formBody,
-            });
+            })
             if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to fill PDF: ${errorText}`);
+                const errorText = await response.text()
+                if (response.status === 401) {
+                    throw new Error("Unauthorized: Invalid or expired token")
+                }
+                throw new Error(`Failed to fill PDF: ${errorText}`)
             }
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.setAttribute("download", `filled_${formType}.pdf`);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            window.URL.revokeObjectURL(url);
+            const blob = await response.blob()
+            const url = window.URL.createObjectURL(blob)
+            const link = document.createElement("a")
+            link.href = url
+            link.setAttribute("download", `filled_${formType}.pdf`)
+            document.body.appendChild(link)
+            link.click()
+            document.body.removeChild(link)
+            window.URL.revokeObjectURL(url)
             toast({
                 title: "Success",
                 description: `Successfully generated ${formType.toUpperCase()} form.`,
-            });
-        } catch (error) {
-            console.error("Error filling PDF:", error);
+            })
+        } catch (error: any) {
+            console.error("Error filling PDF:", error)
             toast({
                 title: "Error",
-                description: `Failed to generate ${formType.toUpperCase()} form. Please try again.`,
+                description: error.message === "Unauthorized: Invalid or expired token"
+                    ? "Your session has expired. Please log in again."
+                    : `Failed to generate ${formType.toUpperCase()} form. Please try again.`,
                 variant: "destructive",
-            });
+            })
+            if (error.message === "Unauthorized: Invalid or expired token") {
+                localStorage.removeItem('accessToken')
+                router.replace('/onboarding')
+            }
         }
     }
 
     const handleSignatureSubmit = async () => {
+        if (!accessToken) {
+            toast({
+                title: "Authentication Required",
+                description: "Please log in to generate forms.",
+                variant: "destructive",
+            })
+            router.replace('/onboarding')
+            return
+        }
+
         if (!signatureRef.current || signatureRef.current.isEmpty()) {
             toast({
                 title: "No Signature",
                 description: "Please provide a signature before continuing.",
                 variant: "destructive",
-            });
-            return;
+            })
+            return
         }
 
-        let signatureDataUrl: string;
+        let signatureDataUrl: string
         try {
             if (typeof signatureRef.current.getTrimmedCanvas === "function") {
-                signatureDataUrl = signatureRef.current.getTrimmedCanvas().toDataURL("image/png");
+                signatureDataUrl = signatureRef.current.getTrimmedCanvas().toDataURL("image/png")
             } else {
-                console.warn("getTrimmedCanvas not available, falling back to toDataURL");
-                signatureDataUrl = signatureRef.current.toDataURL("image/png");
+                console.warn("getTrimmedCanvas not available, falling back to toDataURL")
+                signatureDataUrl = signatureRef.current.toDataURL("image/png")
             }
         } catch (error) {
-            console.error("Error capturing signature:", error);
+            console.error("Error capturing signature:", error)
             toast({
                 title: "Error",
                 description: "Failed to capture signature. Please try again.",
                 variant: "destructive",
-            });
-            return;
+            })
+            return
         }
 
-        const signatureBlob = await (await fetch(signatureDataUrl)).blob();
+        const signatureBlob = await (await fetch(signatureDataUrl)).blob()
 
         const formData = {
             w9: {
@@ -342,58 +415,70 @@ export default function TaxReportsPage() {
                 signature: signatureBlob,
                 date: new Date().toISOString().split("T")[0],
             },
-        };
+        }
 
         try {
-            const formBody = new FormData();
+            const formBody = new FormData()
             Object.entries(formData.w9).forEach(([key, value]) => {
                 if (value instanceof Blob) {
-                    formBody.append(key, value, "signature.png");
+                    formBody.append(key, value, "signature.png")
                 } else {
-                    formBody.append(key, value);
+                    formBody.append(key, value)
                 }
-            });
+            })
 
             const response = await fetch("/.netlify/functions/proxy/api/tax/fill-pdf/w9", {
                 method: "POST",
+                headers: {
+                    Authorization: `Bearer ${accessToken}`, // Include access token
+                },
                 body: formBody,
-            });
+            })
             if (!response.ok) {
-                const errorText = await response.text();
-                console.error(`Server responded with ${response.status}: ${errorText}`);
-                throw new Error(`Failed to fill W-9 PDF: ${errorText}`);
+                const errorText = await response.text()
+                console.error(`Server responded with ${response.status}: ${errorText}`)
+                if (response.status === 401) {
+                    throw new Error("Unauthorized: Invalid or expired token")
+                }
+                throw new Error(`Failed to fill W-9 PDF: ${errorText}`)
             }
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.setAttribute("download", "filled_w9.pdf");
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            window.URL.revokeObjectURL(url);
+            const blob = await response.blob()
+            const url = window.URL.createObjectURL(blob)
+            const link = document.createElement("a")
+            link.href = url
+            link.setAttribute("download", "filled_w9.pdf")
+            document.body.appendChild(link)
+            link.click()
+            document.body.removeChild(link)
+            window.URL.revokeObjectURL(url)
             toast({
                 title: "Success",
                 description: "Successfully generated W-9 form.",
-            });
-        } catch (error) {
-            console.error("Error filling W-9 PDF:", error);
+            })
+        } catch (error: any) {
+            console.error("Error filling W-9 PDF:", error)
             toast({
                 title: "Error",
-                description: "Failed to generate W-9 form. Please try again.",
+                description: error.message === "Unauthorized: Invalid or expired token"
+                    ? "Your session has expired. Please log in again."
+                    : "Failed to generate W-9 form. Please try again.",
                 variant: "destructive",
-            });
+            })
+            if (error.message === "Unauthorized: Invalid or expired token") {
+                localStorage.removeItem('accessToken')
+                router.replace('/onboarding')
+            }
         } finally {
-            setIsSignatureDialogOpen(false);
+            setIsSignatureDialogOpen(false)
             if (signatureRef.current) {
-                signatureRef.current.clear();
+                signatureRef.current.clear()
             }
         }
     }
 
     const clearSignature = () => {
         if (signatureRef.current) {
-            signatureRef.current.clear();
+            signatureRef.current.clear()
         }
     }
 
@@ -671,7 +756,7 @@ export default function TaxReportsPage() {
                         </DialogFooter>
                     </DialogContent>
                 </Dialog>
-                {/* UPDATED: Network List Dialog */}
+
                 <Dialog open={showNetworkDialog} onOpenChange={setShowNetworkDialog}>
                     <DialogContent>
                         <DialogHeader>

@@ -7,8 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { X, CreditCard, Landmark, Smartphone, Bitcoin, AlertCircle } from "lucide-react"
 import { CardElement, useStripe, useElements } from "@stripe/react-stripe-js"
 
-// This component relies on <Elements> wrapper in PaymentsPage
-
 interface AddPaymentMethodDialogProps {
     onClose: () => void
     onAdd: (method: any) => void
@@ -27,98 +25,139 @@ export function AddPaymentMethodDialog({ onClose, onAdd }: AddPaymentMethodDialo
     const [twoFactorCode, setTwoFactorCode] = useState("")
     const [showTwoFactor, setShowTwoFactor] = useState(false)
     const [error, setError] = useState("")
-    const [requestData, setRequestData] = useState<any>(null)
+    const [accessToken, setAccessToken] = useState<string | null>(null); // State to hold the token
     const stripe = useStripe()
     const elements = useElements()
 
-const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setError("");
+    // 1. Fetch access token on component mount
+    useEffect(() => {
+        const token = localStorage.getItem("accessToken");
+        if (token) {
+            setAccessToken(token);
+        }
+    }, []);
 
-    try {
-        let requestData: any = {
-            user_id: "test_user_123",
-            type: paymentType,
-            details: {},
-            token: "",
-        };
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError("");
 
-        if (paymentType === "card") {
-            if (!stripe || !elements) throw new Error("Stripe not initialized");
-            const cardElement = elements.getElement(CardElement);
-            if (!cardElement) throw new Error("Card element not found");
-
-            const { token, error } = await stripe.createToken(cardElement);
-            if (error) throw new Error(error.message);
-            if (!token) throw new Error("Failed to create token");
-
-            requestData.token = token.id;
-            requestData.details = {
-                last4: token.card?.last4,
-                brand: token.card?.brand,
-                exp_month: token.card?.exp_month,
-                exp_year: token.card?.exp_year,
-            };
-        } else if (paymentType === "bank") {
-            requestData.details = bankDetails;
-        } else if (paymentType === "paypal") {
-            if (!paypalDetails.email) throw new Error("PayPal email is required");
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            if (!emailRegex.test(paypalDetails.email)) throw new Error("Invalid email format");
-            requestData.details = { email: paypalDetails.email };
-        } else if (paymentType === "crypto") {
-            // Keep this placeholder disabled logic
-            requestData.details = { address: "" };
-        }
-
-        console.log("Sending payment method request:", requestData);
-
-        const response = await fetch("/.netlify/functions/proxy/payments/method", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestData),
-            signal: AbortSignal.timeout(10000),
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || "Failed to add payment method");
-        }
-
-        const result = await response.json();
-        console.log("Payment method response:", result);
-
-        // Check for the onboarding URL from the backend
-        if (result.onboarding_url) {
-            // Redirect the user to Stripe's hosted onboarding flow
-            window.location.href = result.onboarding_url;
-            return; // Exit the function to prevent further state changes
+        if (!accessToken) {
+            setError("Authentication token missing. Please log in again.");
+            setIsLoading(false);
+            return;
         }
 
-        setRequestData(requestData);
-        setShowTwoFactor(true);
-        setIsLoading(false);
+        try {
+            let requestData: any = {
+                // NOTE: The backend should ideally derive user_id from the token,
+                // but for Pydantic validation based on your setup, we send it.
+                // However, the *actual* user_id in the service should come from the token.
+                // We'll keep the placeholder for now but rely on the token for auth.
+                user_id: "test_user_123", // Placeholder, will be ignored if backend uses token
+                type: paymentType,
+                details: {},
+                token: "",
+            };
 
-    } catch (err: any) {
-        console.error("Payment method error:", err);
-        setError(err.message || "An error occurred while adding the payment method");
-        setIsLoading(false);
-    }
-};
+            // ... (Stripe, Bank, PayPal logic remains the same) ...
+            if (paymentType === "card") {
+                if (!stripe || !elements) throw new Error("Stripe not initialized");
+                const cardElement = elements.getElement(CardElement);
+                if (!cardElement) throw new Error("Card element not found");
+
+                const { token, error } = await stripe.createToken(cardElement);
+                if (error) throw new Error(error.message);
+                if (!token) throw new Error("Failed to create token");
+
+                requestData.token = token.id;
+                requestData.details = {
+                    last4: token.card?.last4,
+                    brand: token.card?.brand,
+                    exp_month: token.card?.exp_month,
+                    exp_year: token.card?.exp_year,
+                };
+            } else if (paymentType === "bank") {
+                requestData.details = bankDetails;
+            } else if (paymentType === "paypal") {
+                if (!paypalDetails.email) throw new Error("PayPal email is required");
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(paypalDetails.email)) throw new Error("Invalid email format");
+                requestData.details = { email: paypalDetails.email };
+            } else if (paymentType === "crypto") {
+                requestData.details = { address: "" };
+            }
+
+            console.log("Sending payment method request:", requestData);
+
+            // 2. Include Authorization Header
+            const response = await fetch("/.netlify/functions/proxy/payments/method", {
+                method: "POST",
+                headers: { 
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${accessToken}`, // FIX: Pass the token
+                },
+                body: JSON.stringify(requestData),
+                signal: AbortSignal.timeout(10000),
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text(); // Read raw text for better error logging
+                console.error("Payment method backend error response:", errorText);
+                try {
+                    const errorData = JSON.parse(errorText);
+                    // Check for standard FastAPI error structure
+                    if (errorData.detail && Array.isArray(errorData.detail)) {
+                        const validationErrors = errorData.detail.map((d: any) => `${d.loc.join('.')}: ${d.msg}`).join(', ');
+                        throw new Error(`Validation Error: ${validationErrors}`);
+                    }
+                    throw new Error(errorData.detail || "Failed to add payment method");
+                } catch {
+                    // Fallback for non-JSON or other errors
+                    throw new Error(`Server returned status ${response.status}: ${errorText.substring(0, 100)}...`);
+                }
+            }
+
+            const result = await response.json();
+            console.log("Payment method response:", result);
+
+            if (result.onboarding_url) {
+                window.location.href = result.onboarding_url;
+                return;
+            }
+
+            // For PayPal/methods requiring 2FA
+            setShowTwoFactor(true);
+            setIsLoading(false);
+
+        } catch (err: any) {
+            console.error("Payment method error:", err);
+            setError(err.message || "An error occurred while adding the payment method");
+            setIsLoading(false);
+        }
+    };
 
     const handleTwoFactorSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         setIsLoading(true)
         setError("")
 
+        if (!accessToken) {
+            setError("Authentication token missing for 2FA. Please log in again.");
+            setIsLoading(false);
+            return;
+        }
+
         try {
-            const payload = { user_id: "test_user_123", code: twoFactorCode }
+            const payload = { user_id: "test_user_123", code: twoFactorCode } // user_id is placeholder
             console.log("Sending 2FA request:", payload)
 
             const response = await fetch("/.netlify/functions/proxy/payments/method/verify-2fa", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { 
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${accessToken}`, // FIX: Pass the token
+                },
                 body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(10000),
             })
@@ -131,14 +170,12 @@ const handleSubmit = async (e: React.FormEvent) => {
             const result = await response.json()
             console.log("2FA response:", result)
             
-            // FIX: The backend now correctly sets the status to 'verified' and returns the final method details.
-            // Ensure we use the returned details/name in onAdd for the parent component to update the UI correctly.
             onAdd({
                 id: result.id,
                 type: result.type,
-                status: "verified", // The UI update assumes 'verified' here
+                status: "verified",
                 name: result.name, 
-                details: result.details, // Use the details returned from the server (e.g., last4 for card)
+                details: result.details,
             })
             onClose();
         } catch (err: any) {
@@ -147,6 +184,8 @@ const handleSubmit = async (e: React.FormEvent) => {
             setIsLoading(false)
         }
     }
+
+    // ... (rest of the component JSX remains the same) ...
 
     return (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -168,6 +207,7 @@ const handleSubmit = async (e: React.FormEvent) => {
                 <CardContent>
                     {!showTwoFactor ? (
                         <form onSubmit={handleSubmit} className="space-y-6">
+                             {/* ... (Payment Type Select and forms) ... */}
                             <div className="space-y-2">
                                 <Label htmlFor="payment-type">Payment Type</Label>
                                 <Select value={paymentType} onValueChange={setPaymentType} required>

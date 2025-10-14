@@ -1,5 +1,8 @@
-"use client"
+// pages/dashboard.tsx
+"use client";
+
 import { useState, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation"; // Add useRouter for redirection
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -118,6 +121,7 @@ const initialNetworkState: NetworkDataState = {
 };
 
 export default function DashboardPage() {
+  const router = useRouter(); // Add router for redirection
   const [networkData, setNetworkData] = useState<NetworkDataState>(initialNetworkState);
   const [timeRange, setTimeRange] = useState("7d");
   const [selectedNetwork, setSelectedNetwork] = useState("all");
@@ -132,13 +136,23 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchUnreadCount = async () => {
       try {
-        const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
+        const token = localStorage.getItem("accessToken");
+        if (!token) {
+          console.error("No access token found for notifications fetch");
+          router.push("/onboarding");
+          return;
+        }
+        const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
         if (response.ok) {
           const data = await response.json();
           const count = data.notifications.filter((n: any) => !n.read).length;
           setUnreadCount(count);
         } else {
-          console.error("Failed to fetch unread count.");
+          console.error("Failed to fetch unread count:", response.statusText);
         }
       } catch (error) {
         console.error("Error fetching unread count:", error);
@@ -146,7 +160,7 @@ export default function DashboardPage() {
     };
 
     fetchUnreadCount();
-  }, []);
+  }, [router]);
 
   const processEvents = (events: AffiliateEvent[]) => {
     const updatedNetworkData: NetworkDataState = JSON.parse(JSON.stringify(initialNetworkState));
@@ -228,15 +242,26 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const response = await fetch("/.netlify/functions/proxy/api/affiliate/events");
+        const token = localStorage.getItem("accessToken");
+        if (!token) {
+          console.error("No access token found for initial data fetch");
+          router.push("/onboarding");
+          return;
+        }
+        const response = await fetch("/.netlify/functions/proxy/api/affiliate/events", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
         if (!response.ok) {
-          throw new Error("Failed to fetch initial data.");
+          throw new Error(`Failed to fetch initial data: ${response.statusText}`);
         }
         const data = await response.json();
         processEvents(data.events);
       } catch (error) {
         console.error("Error fetching initial data:", error);
         processEvents([]);
+        router.push("/onboarding");
       }
     };
 
@@ -257,7 +282,16 @@ export default function DashboardPage() {
 
       websocket.onopen = () => {
         console.log(`WebSocket connected for ${network.id}`);
-        websocket.send(JSON.stringify({ config: { frequency: 50000, networks: [network.id] } }));
+        const token = localStorage.getItem("accessToken");
+        if (token) {
+          websocket.send(JSON.stringify({
+            token, // Include accessToken
+            config: { frequency: 50000, networks: [network.id] }, // Reduced frequency for testing
+          }));
+        } else {
+          console.error(`No access token found for ${network.id} WebSocket`);
+          websocket.close();
+        }
       };
 
       websocket.onmessage = (event) => {
@@ -275,7 +309,6 @@ export default function DashboardPage() {
             _id: data.notification?._id ?? data.event._id,
           };
 
-          // Debug: Log the notificationEvent to verify structure
           console.log(`WebSocket event for ${network.id}:`, notificationEvent);
 
           setAllEvents((prev) => [notificationEvent, ...prev].slice(0, 100));
@@ -352,12 +385,31 @@ export default function DashboardPage() {
     return () => {
       websockets.forEach((ws) => ws.close());
     };
-  }, []);
+  }, [router]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setIsRefreshing(false);
+    try {
+      const token = localStorage.getItem("accessToken");
+      if (!token) {
+        router.push("/onboarding");
+        return;
+      }
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/events", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to refresh data: ${response.statusText}`);
+      }
+      const data = await response.json();
+      processEvents(data.events);
+    } catch (error) {
+      console.error("Error refreshing data:", error);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const handleExportToPdf = () => {

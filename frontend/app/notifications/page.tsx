@@ -1,8 +1,7 @@
-// C:\Users\Prasannakumar\Downloads\affiliate-command-center\frontend\app\notifications\page.tsx
-
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -89,14 +88,13 @@ const formatNotification = (event: any): Notification => {
       if (typeof event.amount === 'number') {
         amount = `$${event.amount.toFixed(2)}`;
       }
-      // FIX: Use a fallback for event.network
       actionUrl = `/dashboard?network=${networkName.toLowerCase().replace(' ', '-')}`;
       category = "earnings";
       break;
     case "payout":
       title = "Payment Status Update";
       if (typeof event.amount === 'number') {
-        amount = `$${event.amount.toFixed(2)}`;
+        amount = `$${Math.abs(event.amount).toFixed(2)}`;
       }
       actionUrl = "/payments";
       category = "payments";
@@ -105,6 +103,19 @@ const formatNotification = (event: any): Notification => {
       title = "New Clicks on Campaign";
       actionUrl = `/analytics?campaign=${encodeURIComponent(event.campaign || '')}`;
       category = "performance";
+      break;
+    case "impression":
+      title = "New Impressions Recorded";
+      actionUrl = `/analytics?campaign=${encodeURIComponent(event.campaign || '')}`;
+      category = "performance";
+      break;
+    case "conversion":
+      title = "New Conversion";
+      if (typeof event.commissionAmount === 'number') {
+        amount = `$${event.commissionAmount.toFixed(2)}`;
+      }
+      actionUrl = `/dashboard?network=${networkName.toLowerCase().replace(' ', '-')}`;
+      category = "earnings";
       break;
     default:
       title = "System Update";
@@ -119,9 +130,9 @@ const formatNotification = (event: any): Notification => {
     amount,
     time: timeString,
     timestamp,
-    read: event.read,
+    read: event.read ?? false,
     priority: getPriority(event.type),
-    network: networkName, // Use the sanitized networkName
+    network: networkName,
     actionUrl,
     category,
     created_at: event.created_at,
@@ -130,130 +141,291 @@ const formatNotification = (event: any): Notification => {
 };
 
 export default function NotificationsPage() {
-  const [activeTab, setActiveTab] = useState("all")
-  const [showSettings, setShowSettings] = useState(false)
-  const [searchQuery, setSearchQuery] = useState("")
-  const [selectedNotifications, setSelectedNotifications] = useState<string[]>([])
-  const [notifications, setNotifications] = useState<Notification[]>([])
+  const router = useRouter();
+  const [activeTab, setActiveTab] = useState("all");
+  const [showSettings, setShowSettings] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedNotifications, setSelectedNotifications] = useState<string[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [itemsToShow, setItemsToShow] = useState(ITEMS_PER_PAGE);
 
   const fetchNotifications = useCallback(async () => {
     try {
-      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
+      const token = localStorage.getItem("accessToken");
+      if (!token) {
+        console.error("No access token found for notifications fetch");
+        router.push("/onboarding");
+        return;
+      }
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (!response.ok) {
-        throw new Error("Failed to fetch notifications.");
+        if (response.status === 401) {
+          console.error("Unauthorized: Invalid or expired token");
+          localStorage.removeItem("accessToken");
+          router.push("/onboarding");
+          return;
+        }
+        throw new Error(`Failed to fetch notifications: ${response.statusText}`);
       }
       const data = await response.json();
       const formattedNotifications = data.notifications.map(formatNotification);
       setNotifications(formattedNotifications);
     } catch (error) {
       console.error("Error fetching notifications:", error);
+      router.push("/onboarding");
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     fetchNotifications();
+
+    const connectedNetworks = [
+      { id: "amazon-associates", name: "Amazon Associates" },
+      { id: "shareasale", name: "ShareASale" },
+      { id: "commission-junction", name: "Commission Junction" },
+      { id: "clickbank", name: "ClickBank" },
+    ];
+
+    const websockets: WebSocket[] = [];
+
+    connectedNetworks.forEach((network) => {
+      const websocket = new WebSocket(`ws://localhost:8000/api/affiliate/ws/${network.id}-events`);
+      websockets.push(websocket);
+
+      websocket.onopen = () => {
+        console.log(`WebSocket connected for notifications: ${network.id}`);
+        const token = localStorage.getItem("accessToken");
+        if (token) {
+          websocket.send(JSON.stringify({
+            token,
+            config: { frequency: 5000, networks: [network.id] },
+          }));
+        } else {
+          console.error(`No access token found for ${network.id} WebSocket`);
+          websocket.close();
+        }
+      };
+
+      websocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            console.error(`WebSocket error for ${network.id}: ${data.error}`);
+            return;
+          }
+
+          const notification = formatNotification({
+            ...data.event,
+            message: data.notification?.message,
+            read: data.notification?.read ?? false,
+            _id: data.notification?._id ?? data.event._id,
+            user_id: data.notification?.user_id,
+            created_at: data.notification?.created_at ?? data.event.date,
+          });
+
+          setNotifications((prev) => [notification, ...prev].slice(0, 100));
+        } catch (err) {
+          console.error(`WebSocket message parsing error for ${network.id}:`, err);
+        }
+      };
+
+      websocket.onclose = () => {
+        console.log(`WebSocket disconnected for ${network.id}`);
+      };
+
+      websocket.onerror = (error) => {
+        console.error(`WebSocket error for ${network.id}:`, error);
+      };
+    });
+
+    return () => {
+      websockets.forEach((ws) => ws.close());
+    };
   }, [fetchNotifications]);
 
+  const markAsRead = async (notificationIds: string[]) => {
+    try {
+      const token = localStorage.getItem("accessToken");
+      if (!token) {
+        console.error("No access token for marking notifications as read");
+        router.push("/onboarding");
+        return;
+      }
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications/mark-read", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ notification_ids: notificationIds }),
+      });
 
-  const unreadCount = notifications.filter((n) => !n.read).length
+      if (response.ok) {
+        setNotifications((prev) =>
+          prev.map((n) => (notificationIds.includes(n._id) ? { ...n, read: true } : n))
+        );
+        setSelectedNotifications([]);
+      } else {
+        if (response.status === 401) {
+          console.error("Unauthorized: Invalid or expired token");
+          localStorage.removeItem("accessToken");
+          router.push("/onboarding");
+        } else {
+          console.error("Failed to mark notifications as read:", response.statusText);
+        }
+      }
+    } catch (error) {
+      console.error("Error marking notifications as read:", error);
+      router.push("/onboarding");
+    }
+  };
+
+  const markAsUnread = async (notificationIds: string[]) => {
+    try {
+      const token = localStorage.getItem("accessToken");
+      if (!token) {
+        console.error("No access token for marking notifications as unread");
+        router.push("/onboarding");
+        return;
+      }
+      // Assuming backend supports marking as unread; otherwise, keep client-side
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications/mark-unread", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ notification_ids: notificationIds }),
+      });
+
+      if (response.ok) {
+        setNotifications((prev) =>
+          prev.map((n) => (notificationIds.includes(n._id) ? { ...n, read: false } : n))
+        );
+        setSelectedNotifications([]);
+      } else {
+        if (response.status === 401) {
+          console.error("Unauthorized: Invalid or expired token");
+          localStorage.removeItem("accessToken");
+          router.push("/onboarding");
+        } else {
+          console.error("Failed to mark notifications as unread:", response.statusText);
+        }
+      }
+    } catch (error) {
+      console.error("Error marking notifications as unread:", error);
+      router.push("/onboarding");
+    }
+  };
+
+  const deleteNotifications = async (notificationIds: string[]) => {
+    try {
+      const token = localStorage.getItem("accessToken");
+      if (!token) {
+        console.error("No access token for deleting notifications");
+        router.push("/onboarding");
+        return;
+      }
+      // Assuming backend supports deletion; otherwise, keep client-side
+      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ notification_ids: notificationIds }),
+      });
+
+      if (response.ok) {
+        setNotifications((prev) => prev.filter((n) => !notificationIds.includes(n._id)));
+        setSelectedNotifications([]);
+      } else {
+        if (response.status === 401) {
+          console.error("Unauthorized: Invalid or expired token");
+          localStorage.removeItem("accessToken");
+          router.push("/onboarding");
+        } else {
+          console.error("Failed to delete notifications:", response.statusText);
+        }
+      }
+    } catch (error) {
+      console.error("Error deleting notifications:", error);
+      router.push("/onboarding");
+    }
+  };
+
+  const markAllAsRead = () => {
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n._id);
+    if (unreadIds.length > 0) {
+      markAsRead(unreadIds);
+    }
+  };
+
+  const getPriorityIcon = (priority: string) => {
+    switch (priority) {
+      case "high":
+        return <AlertTriangle className="w-4 h-4 text-red-500" />;
+      case "medium":
+        return <Info className="w-4 h-4 text-yellow-500" />;
+      case "low":
+        return <CheckCircle className="w-4 h-4 text-green-500" />;
+      default:
+        return <Bell className="w-4 h-4 text-muted-foreground" />;
+    }
+  };
+
+  const getTypeIcon = (type: string) => {
+    switch (type) {
+      case "commission":
+      case "conversion":
+        return <DollarSign className="w-4 h-4 text-green-500" />;
+      case "payout":
+        return <DollarSign className="w-4 h-4 text-blue-500" />;
+      case "alert":
+        return <AlertTriangle className="w-4 h-4 text-red-500" />;
+      case "optimization":
+        return <TrendingUp className="w-4 h-4 text-purple-500" />;
+      case "click":
+      case "impression":
+        return <TrendingUp className="w-4 h-4 text-teal-500" />;
+      case "system":
+        return <Settings className="w-4 h-4 text-gray-500" />;
+      default:
+        return <Bell className="w-4 h-4 text-muted-foreground" />;
+    }
+  };
+
+  const handleShowMore = () => {
+    setItemsToShow((prevItemsToShow) => prevItemsToShow + ITEMS_PER_PAGE);
+  };
 
   const filteredNotifications = notifications.filter((notification) => {
     const matchesSearch =
       searchQuery === "" ||
       notification.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       notification.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      notification.network.toLowerCase().includes(searchQuery.toLowerCase())
+      notification.network.toLowerCase().includes(searchQuery.toLowerCase());
 
-    if (!matchesSearch) return false
+    if (!matchesSearch) return false;
 
-    if (activeTab === "all") return true
-    if (activeTab === "unread") return !notification.read
-    if (activeTab === "commissions") return notification.type === "commission"
-    if (activeTab === "payments") return notification.type === "payout"
-    if (activeTab === "alerts") return notification.type === "alert" || notification.type === "optimization"
-    if (activeTab === "high-priority") return notification.priority === "high"
-    return true
-  })
-
-  const markAsRead = async (notificationIds: string[]) => {
-    try {
-      const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications/mark-read", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ notification_ids: notificationIds }),
-      });
-
-      if (response.ok) {
-        setNotifications((prev) => prev.map((n) => (notificationIds.includes(n._id) ? { ...n, read: true } : n)));
-        setSelectedNotifications([]);
-      } else {
-        console.error("Failed to mark notifications as read.");
-      }
-    } catch (error) {
-      console.error("Error marking notifications as read:", error);
-    }
-  };
-
-  const markAsUnread = (notificationIds: string[]) => {
-    // You would add a similar API call here to handle unread status if your backend supports it.
-    setNotifications((prev) => prev.map((n) => (notificationIds.includes(n._id) ? { ...n, read: false } : n)))
-    setSelectedNotifications([])
-  }
-
-  const deleteNotifications = (notificationIds: string[]) => {
-    // You would add a similar API call here to delete notifications from the backend.
-    setNotifications((prev) => prev.filter((n) => !notificationIds.includes(n._id)))
-    setSelectedNotifications([])
-  }
-
-  const markAllAsRead = () => {
-    // You would call the markAsRead function with all unread notification IDs.
-    const unreadIds = notifications.filter(n => !n.read).map(n => n._id);
-    markAsRead(unreadIds);
-  }
-
-  const getPriorityIcon = (priority: string) => {
-    switch (priority) {
-      case "high":
-        return <AlertTriangle className="w-4 h-4 text-red-500" />
-      case "medium":
-        return <Info className="w-4 h-4 text-yellow-500" />
-      case "low":
-        return <CheckCircle className="w-4 h-4 text-green-500" />
-      default:
-        return <Bell className="w-4 h-4 text-muted-foreground" />
-    }
-  }
-
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case "commission":
-        return <DollarSign className="w-4 h-4 text-green-500" />
-      case "payout":
-        return <DollarSign className="w-4 h-4 text-blue-500" />
-      case "alert":
-        return <AlertTriangle className="w-4 h-4 text-red-500" />
-      case "optimization":
-        return <TrendingUp className="w-4 h-4 text-purple-500" />
-      case "system":
-        return <Settings className="w-4 h-4 text-gray-500" />
-      default:
-        return <Bell className="w-4 h-4 text-muted-foreground" />
-    }
-  }
-
-  const handleShowMore = () => {
-    setItemsToShow(prevItemsToShow => prevItemsToShow + ITEMS_PER_PAGE);
-  };
+    if (activeTab === "all") return true;
+    if (activeTab === "unread") return !notification.read;
+    if (activeTab === "commissions") return notification.type === "commission" || notification.type === "conversion";
+    if (activeTab === "payments") return notification.type === "payout";
+    if (activeTab === "alerts") return notification.type === "alert" || notification.type === "optimization";
+    if (activeTab === "high-priority") return notification.priority === "high";
+    return true;
+  });
 
   const visibleNotifications = filteredNotifications.slice(0, itemsToShow);
   const hasMoreNotifications = filteredNotifications.length > itemsToShow;
 
   return (
-    <DashboardLayout unreadCount={unreadCount}>
+    <DashboardLayout unreadCount={notifications.filter((n) => !n.read).length}>
       <div className="space-y-8">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -261,7 +433,11 @@ export default function NotificationsPage() {
             <h1 className="text-3xl font-bold flex items-center gap-3 text-balance">
               <Bell className="w-8 h-8 text-primary" />
               Notifications
-              {unreadCount > 0 && <Badge className="bg-primary text-primary-foreground">{unreadCount} new</Badge>}
+              {notifications.filter((n) => !n.read).length > 0 && (
+                <Badge className="bg-primary text-primary-foreground">
+                  {notifications.filter((n) => !n.read).length} new
+                </Badge>
+              )}
             </h1>
             <p className="text-muted-foreground">Stay updated on your affiliate marketing activities</p>
           </div>
@@ -279,7 +455,11 @@ export default function NotificationsPage() {
               <Settings className="w-4 h-4 mr-2" />
               Settings
             </Button>
-            <Button size="sm" onClick={markAllAsRead} disabled={unreadCount === 0}>
+            <Button
+              size="sm"
+              onClick={markAllAsRead}
+              disabled={notifications.filter((n) => !n.read).length === 0}
+            >
               Mark All Read
             </Button>
           </div>
@@ -304,7 +484,7 @@ export default function NotificationsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Unread</p>
-                  <p className="text-2xl font-bold">{unreadCount}</p>
+                  <p className="text-2xl font-bold">{notifications.filter((n) => !n.read).length}</p>
                 </div>
                 <EyeOff className="w-8 h-8 text-orange-500/60" />
               </div>
@@ -328,8 +508,11 @@ export default function NotificationsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Commissions</p>
-                  <p className="text-2xl font-bold">{notifications.filter((n) => n.type === "commission").length}</p>
+                  <p className="text-2xl font-bold">
+                    {notifications.filter((n) => n.type === "commission" || n.type === "conversion").length}
+                  </p>
                 </div>
+                <DollarSign className="w-8 h-8 text-green-500/60" />
               </div>
             </CardContent>
           </Card>
@@ -341,6 +524,7 @@ export default function NotificationsPage() {
                   <p className="text-sm font-medium text-muted-foreground">Payments</p>
                   <p className="text-2xl font-bold">{notifications.filter((n) => n.type === "payout").length}</p>
                 </div>
+                <DollarSign className="w-8 h-8 text-blue-500/60" />
               </div>
             </CardContent>
           </Card>
@@ -381,8 +565,10 @@ export default function NotificationsPage() {
                     <TabsTrigger value="all">All</TabsTrigger>
                     <TabsTrigger value="unread">
                       Unread
-                      {unreadCount > 0 && (
-                        <Badge className="ml-2 bg-primary text-primary-foreground text-xs">{unreadCount}</Badge>
+                      {notifications.filter((n) => !n.read).length > 0 && (
+                        <Badge className="ml-2 bg-primary text-primary-foreground text-xs">
+                          {notifications.filter((n) => !n.read).length}
+                        </Badge>
                       )}
                     </TabsTrigger>
                     <TabsTrigger value="high-priority">Priority</TabsTrigger>
@@ -403,9 +589,9 @@ export default function NotificationsPage() {
                               } ${selectedNotifications.includes(notification._id) ? "ring-2 ring-primary/50" : ""}`}
                               onClick={() => {
                                 if (selectedNotifications.includes(notification._id)) {
-                                  setSelectedNotifications((prev) => prev.filter((id) => id !== notification._id))
+                                  setSelectedNotifications((prev) => prev.filter((id) => id !== notification._id));
                                 } else {
-                                  setSelectedNotifications((prev) => [...prev, notification._id])
+                                  setSelectedNotifications((prev) => [...prev, notification._id]);
                                 }
                               }}
                             >
@@ -418,7 +604,9 @@ export default function NotificationsPage() {
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between">
                                       <h4
-                                        className={`font-semibold text-sm ${!notification.read ? "text-foreground" : "text-muted-foreground"}`}
+                                        className={`font-semibold text-sm ${
+                                          !notification.read ? "text-foreground" : "text-muted-foreground"
+                                        }`}
                                       >
                                         {notification.title}
                                       </h4>
@@ -442,7 +630,12 @@ export default function NotificationsPage() {
                                         <span>{notification.time}</span>
                                       </div>
                                       {notification.actionUrl && (
-                                        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 px-2 text-xs"
+                                          onClick={() => router.push(notification.actionUrl)}
+                                        >
                                           <ExternalLink className="w-3 h-3 mr-1" />
                                           View Details
                                         </Button>
@@ -469,8 +662,8 @@ export default function NotificationsPage() {
                             {searchQuery
                               ? `No notifications match "${searchQuery}"`
                               : activeTab === "unread"
-                                ? "You're all caught up! No unread notifications."
-                                : "No notifications in this category yet."}
+                              ? "You're all caught up! No unread notifications."
+                              : "No notifications in this category yet."}
                           </p>
                         </div>
                       )}
@@ -488,5 +681,5 @@ export default function NotificationsPage() {
         </div>
       </div>
     </DashboardLayout>
-  )
+  );
 }

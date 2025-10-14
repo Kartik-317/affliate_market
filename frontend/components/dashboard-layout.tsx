@@ -1,5 +1,3 @@
-// C:\Users\Prasannakumar\Downloads\affiliate-command-center\frontend\components\dashboard-layout.tsx
-
 "use client"
 
 import type React from "react"
@@ -31,6 +29,16 @@ interface DashboardLayoutProps {
 export function DashboardLayout({ children, unreadCount = 0 }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const pathname = usePathname()
+  const [userName, setUserName] = useState<string>("User")
+  const [userEmail, setUserEmail] = useState<string>("email@example.com")
+
+  // Load user data from localStorage on component mount
+  useEffect(() => {
+    const storedName = localStorage.getItem('userName')
+    const storedEmail = localStorage.getItem('userEmail')
+    if (storedName) setUserName(storedName)
+    if (storedEmail) setUserEmail(storedEmail)
+  }, [])
 
   const navigation = [
     { name: "Dashboard", href: "/dashboard", icon: Home },
@@ -115,8 +123,8 @@ export function DashboardLayout({ children, unreadCount = 0 }: DashboardLayoutPr
                 <User className="w-4 h-4 text-sidebar-accent-foreground" />
               </div>
               <div className="flex-1">
-                <p className="text-sm font-medium text-sidebar-foreground">John Doe</p>
-                <p className="text-xs text-sidebar-foreground/60">john@example.com</p>
+                <p className="text-sm font-medium text-sidebar-foreground">{userName}</p>
+                <p className="text-xs text-sidebar-foreground/60">{userEmail}</p>
               </div>
               <Button variant="ghost" size="sm">
                 <LogOut className="w-4 h-4" />

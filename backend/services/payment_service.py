@@ -37,7 +37,6 @@ class PaymentService:
 
     async def get_payments(self, user_id: str) -> List[Dict]:
         """Retrieves payment/withdrawal history for a user."""
-        # Note: 'to_list(None)' requires an async driver like motor.
         payments = await self.db.payments.find({"user_id": user_id}).to_list(None)
         return payments
 
@@ -69,17 +68,11 @@ class PaymentService:
             payout_status = "pending"
 
             if payment_method["type"] == "paypal":
-                # NOTE: This is a placeholder. Real PayPal payouts require calling 
-                # the PayPal Payouts API, which is complex and requires setting up 
-                # the Payouts service.
                 payout_id = f"paypal_payout_{datetime.utcnow().timestamp()}"
                 payout_status = "pending"
                 logging.info(f"PayPal withdrawal processed (simulated). Payout ID: {payout_id}")
             
             elif payment_method["type"] in ["stripe_standard"]:
-                # --- CHANGE FOR STANDARD ACCOUNTS: Use Stripe Transfer ---
-                # Funds are transferred from the platform's balance to the connected account's balance.
-                # The user (Standard account holder) then manages the payout to their bank.
                 stripe_account_id = payment_method["stripe_account_id"]
                 
                 logging.info(f"Creating Stripe Transfer to Standard account: amount={int(amount * 100)}, currency=usd, destination={stripe_account_id}")
@@ -87,11 +80,11 @@ class PaymentService:
                 transfer = stripe.Transfer.create(
                     amount=int(amount * 100),
                     currency="usd",
-                    destination=stripe_account_id, # Transfer to the Standard Stripe Account ID
+                    destination=stripe_account_id,
                     metadata={"withdrawal_method_id": method, "user_id": user_id}
                 )
                 payout_id = transfer.id
-                payout_status = "processed" # The transfer itself is immediate on Stripe's ledger.
+                payout_status = "processed"
                 logging.info(f"Stripe Transfer created successfully. Transfer ID: {payout_id}, Status: {payout_status}")
             
             else:
@@ -120,55 +113,63 @@ class PaymentService:
             logging.error(error_message)
             raise HTTPException(status_code=500, detail=error_message)
 
-    async def add_payment_method(self, request: PaymentMethodRequest) -> Dict:
+    async def add_payment_method(self, request: PaymentMethodRequest, user_id: str, tenant_id: str) -> Dict:
         """Adds a payment method (either a Stripe Standard Account link or PayPal)."""
         try:
-            user = await self.db.users.find_one({"_id": request.user_id})
+            authenticated_user_id = user_id
+            
+            # Use ObjectId to ensure the find operation works correctly against the user's _id
+            user = await self.db.users.find_one({"_id": ObjectId(authenticated_user_id)})
+            
             if not user:
-                user_data = {"_id": request.user_id, "email": f"{request.user_id}@example.com"}
+                # If the user somehow doesn't exist (e.g., token is valid but DB entry is gone), create a minimal one.
+                user_data = {"_id": ObjectId(authenticated_user_id), "email": f"user_{authenticated_user_id}@example.com", "tenantId": tenant_id}
                 await self.db.users.insert_one(user_data)
                 user = user_data
             
-            # (Stripe Customer setup for payment collection remains, though not essential for payouts)
+            # --- START STRIPE ID UPDATE LOGIC ---
+            
+            # 1. Handle Stripe Customer ID (for accepting payments, optional for payouts but good practice)
             customer_id = user.get("stripe_customer_id")
             if not customer_id:
-                customer = stripe.Customer.create(email=user.get("email", ""))
+                customer = stripe.Customer.create(email=user.get("email", f"user_{authenticated_user_id}@example.com"))
+                
+                # UPDATE EXISTING USER DOCUMENT
                 await self.db.users.update_one(
-                    {"_id": request.user_id},
+                    {"_id": ObjectId(authenticated_user_id)},
                     {"$set": {"stripe_customer_id": customer.id}}
                 )
                 customer_id = customer.id
+                user["stripe_customer_id"] = customer_id # Update local user dict for immediate use
 
             destination_id = None
             details = {}
             payment_method_type = None
+            custom_account_id = None
+            account_link = None # Initialize for broader scope
 
             if request.type in ["card", "bank", "stripe_standard"]:
-                # --- CHANGE TO STANDARD ACCOUNT LOGIC ---
-                
+                # 2. Handle Stripe Connect Account ID (for receiving payouts)
                 custom_account_id = user.get("stripe_account_id")
                 if not custom_account_id:
                     # Create a Stripe Connect Standard account
                     custom_account = stripe.Account.create(
                         type="standard",
-                        email=user.get("email"),
+                        email=user.get("email", f"user_{authenticated_user_id}@example.com"),
                     )
+                    
+                    # UPDATE EXISTING USER DOCUMENT
                     await self.db.users.update_one(
-                        {"_id": request.user_id},
+                        {"_id": ObjectId(authenticated_user_id)},
                         {"$set": {"stripe_account_id": custom_account.id}}
                     )
                     custom_account_id = custom_account.id
                     
-                # Use the Standard Account ID as the destination for identification
                 destination_id = custom_account_id
                 payment_method_type = "stripe_standard"
                 details = {"account_id": custom_account_id}
                 
-                # NOTE: For Standard accounts, the user MUST be redirected to 
-                # Stripe's hosted onboarding to add their bank account details and be verified. 
-                # This function only creates the link.
-                
-                # Create an account link to redirect the user for onboarding
+                # Create an account link for user onboarding
                 account_link = stripe.AccountLink.create(
                     account=custom_account_id,
                     refresh_url=f"{settings.FRONTEND_BASE_URL}/payments/onboarding/refresh",
@@ -176,10 +177,7 @@ class PaymentService:
                     type="account_onboarding",
                 )
                 
-                # We store the Stripe method details but return the link to the client
-                # The status is set to verified here, but the account still needs
-                # to complete onboarding to receive payouts. This is an integration detail.
-                status = "verified" 
+                status = "pending_onboarding" # More accurate status before bank details are added
                 message = f"Stripe Standard Account linked. User must complete onboarding at: {account_link.url}"
                 
             elif request.type == "paypal":
@@ -187,7 +185,7 @@ class PaymentService:
                 if not email:
                     raise HTTPException(status_code=400, detail="PayPal email is required")
                 
-                destination_id = f"paypal_{request.user_id}_{datetime.utcnow().timestamp()}"
+                destination_id = f"paypal_{authenticated_user_id}_{datetime.utcnow().timestamp()}"
                 details = {"email": email}
                 payment_method_type = "paypal"
                 status = "pending" # Requires 2FA verification
@@ -196,13 +194,13 @@ class PaymentService:
             else:
                 raise HTTPException(status_code=400, detail="Unsupported payment method")
 
-            # Store payment method in database
+            # Store payment method in database (payment_methods collection)
             payment_method_data = {
-                "user_id": request.user_id,
+                "user_id": authenticated_user_id,
                 "type": payment_method_type,
                 "name": f"{payment_method_type.replace('_', ' ').title()} Payout Method",
                 "details": details,
-                "stripe_destination_id": destination_id, # This is the Standard Account ID if Stripe
+                "stripe_destination_id": destination_id, 
                 "stripe_account_id": custom_account_id if payment_method_type == "stripe_standard" else None,
                 "status": status,
                 "added_date": datetime.utcnow(),
@@ -210,7 +208,7 @@ class PaymentService:
             }
             result = await self.db.payment_methods.insert_one(payment_method_data)
             
-            return {"id": str(result.inserted_id), "message": message, "onboarding_url": account_link.url if 'account_link' in locals() else None}
+            return {"id": str(result.inserted_id), "message": message, "onboarding_url": account_link.url if account_link else None}
         
         except stripe.error.StripeError as e:
             error_message = f"Stripe API Error: {str(e)}, Code: {e.code if hasattr(e, 'code') else 'N/A'}, Request ID: {e.request_id if hasattr(e, 'request_id') else 'N/A'}"
@@ -221,22 +219,20 @@ class PaymentService:
             logging.error(f"Internal Error during add_payment_method: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
-    async def verify_payment_method_2fa(self, verification: TwoFactorVerification) -> Dict:
+    async def verify_payment_method_2fa(self, verification: TwoFactorVerification, user_id: str) -> Dict:
         """Verifies a payment method using 2FA (Primarily for PayPal)."""
         if not verification.code:
             raise HTTPException(status_code=400, detail="Invalid 2FA code")
 
-        # Find the latest pending PayPal method
+        # Find the latest pending PayPal method using the authenticated user_id
         payment_method = await self.db.payment_methods.find_one(
-            {"user_id": verification.user_id, "status": "pending", "type": "paypal"},
+            {"user_id": user_id, "status": "pending", "type": "paypal"},
             sort=[("added_date", -1)]
         )
         if not payment_method:
             raise HTTPException(status_code=400, detail="No pending PayPal payment method found for verification.")
         
-        # NOTE: You would typically integrate with a 2FA service (e.g., Twilio) here 
-        # to verify the code. For this example, we assume verification passes.
-
+        # NOTE: Mock verification logic
         await self.db.payment_methods.update_one(
             {"_id": payment_method["_id"]},
             {"$set": {"status": "verified"}}

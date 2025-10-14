@@ -1,12 +1,14 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/components/ui/use-toast";
 import {
     ArrowUpRight,
     Plus,
@@ -26,16 +28,16 @@ import {
     TrendingUp,
     DollarSign,
     Zap,
-} from "lucide-react"
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { PaymentHistory } from "@/components/payment-history"
-import { WithdrawalForm } from "@/components/withdrawal-form"
-import { AddPaymentMethodDialog } from "@/components/add-payment-method-dialog"
-import { Elements } from "@stripe/react-stripe-js"
-import { loadStripe, Stripe } from "@stripe/stripe-js"
-import { ModifyAutoWithdrawalDialog } from "@/components/modify-auto-withdrawal-dialog"
+} from "lucide-react";
+import { DashboardLayout } from "@/components/dashboard-layout";
+import { PaymentHistory } from "@/components/payment-history";
+import { WithdrawalForm } from "@/components/withdrawal-form";
+import { AddPaymentMethodDialog } from "@/components/add-payment-method-dialog";
+import { Elements } from "@stripe/react-stripe-js";
+import { loadStripe, Stripe } from "@stripe/stripe-js";
+import { ModifyAutoWithdrawalDialog } from "@/components/modify-auto-withdrawal-dialog";
 
-// Initialize Stripe Promise state (will be loaded dynamically)
+// Initialize Stripe Promise state
 const initialStripePromise = loadStripe("pk_dummy_placeholder_for_initial_type_check");
 
 // Define interface for affiliate events
@@ -82,31 +84,34 @@ interface AutoWithdrawalSettings {
 }
 
 export default function PaymentsPage() {
-    const [activeTab, setActiveTab] = useState("overview")
-    const [showWithdrawal, setShowWithdrawal] = useState(false)
-    const [showAddPaymentMethod, setShowAddPaymentMethod] = useState(false)
+    const [activeTab, setActiveTab] = useState("overview");
+    const [showWithdrawal, setShowWithdrawal] = useState(false);
+    const [showAddPaymentMethod, setShowAddPaymentMethod] = useState(false);
     const [showModifySchedule, setShowModifySchedule] = useState(false);
-    const [searchQuery, setSearchQuery] = useState("")
-    const [dateRange, setDateRange] = useState("30d")
-    const [paymentFilter, setPaymentFilter] = useState("all")
-    const [unreadCount, setUnreadCount] = useState(0)
-    const [events, setEvents] = useState<AffiliateEvent[]>([])
+    const [searchQuery, setSearchQuery] = useState("");
+    const [dateRange, setDateRange] = useState("30d");
+    const [paymentFilter, setPaymentFilter] = useState("all");
+    const [unreadCount, setUnreadCount] = useState(0);
+    const [events, setEvents] = useState<AffiliateEvent[]>([]);
+    const [accessToken, setAccessToken] = useState<string | null>(null);
     const [walletData, setWalletData] = useState({
         totalBalance: 0,
         availableBalance: 0,
         pendingBalance: 0,
         thisMonth: 0,
         averageMonthly: 0,
-        nextPayoutDate: "N/A", // Will be calculated
-        totalEarnings: 0, // This is the value that needs to match Total Revenue
+        nextPayoutDate: "N/A",
+        totalEarnings: 0,
         totalWithdrawals: 0,
         totalBalanceChange: null as number | null,
         thisMonthChange: null as number | null,
         networkBreakdown: [] as NetworkBreakdown[],
-    })
+    });
 
-    const [paymentMethods, setPaymentMethods] = useState<any[]>([])
+    const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
     const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
+    const { toast } = useToast();
+    const router = useRouter();
 
     const [autoWithdrawalSettings, setAutoWithdrawalSettings] = useState<AutoWithdrawalSettings>({
         enabled: true,
@@ -120,92 +125,169 @@ export default function PaymentsPage() {
             "ClickBank": 300,
             "Amazon Associates": 100,
         },
-    })
-    
-    // --- Fetch Stripe Publishable Key ---
+    });
+
+    // Fetch access token from localStorage
     useEffect(() => {
-        const fetchStripeConfig = async () => {
+        const token = localStorage.getItem("accessToken");
+        console.log("Access Token:", token);
+        if (token) {
+            setAccessToken(token);
+        } else {
+            console.log("No token found, redirecting to /onboarding");
+            toast({
+                title: "Authentication Required",
+                description: "Please log in to access this page.",
+                variant: "destructive",
+            });
+            router.replace("/onboarding");
+        }
+    }, [router, toast]);
+
+    // Fetch Stripe Publishable Key
+    useEffect(() => {
+        async function fetchStripeConfig() {
+            if (!accessToken) return;
             try {
-                const response = await fetch("/.netlify/functions/proxy/payments/config");
+                const response = await fetch("/.netlify/functions/proxy/payments/config", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                    },
+                });
                 if (!response.ok) {
-                    throw new Error("Failed to fetch Stripe configuration.");
+                    if (response.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token");
+                    }
+                    throw new Error("Failed to fetch Stripe configuration");
                 }
                 const data = await response.json();
                 const pk = data.publishableKey;
                 if (pk) {
                     setStripePromise(loadStripe(pk));
                 } else {
-                    console.error("Stripe Publishable Key not found in config.");
+                    console.error("Stripe Publishable Key not found in config");
+                    toast({
+                        title: "Error",
+                        description: "Stripe configuration missing. Please try again.",
+                        variant: "destructive",
+                    });
                 }
-            } catch (error) {
+            } catch (error: any) {
                 console.error("Error fetching Stripe config:", error);
-            }
-        };
-
-        fetchStripeConfig();
-    }, []);
-
-    // --- Fetch Unread Count ---
-    useEffect(() => {
-        const fetchUnreadCount = async () => {
-            try {
-                const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications");
-                if (response.ok) {
-                    const data = await response.json();
-                    const count = data.notifications.filter((n: any) => !n.read).length;
-                    setUnreadCount(count);
-                } else {
-                    console.error("Failed to fetch unread count.");
+                toast({
+                    title: "Error",
+                    description: error.message === "Unauthorized: Invalid or expired token"
+                        ? "Your session has expired. Please log in again."
+                        : "Failed to fetch Stripe configuration. Please try again.",
+                    variant: "destructive",
+                });
+                if (error.message === "Unauthorized: Invalid or expired token") {
+                    localStorage.removeItem("accessToken");
+                    router.replace("/onboarding");
                 }
-            } catch (error) {
-                console.error("Error fetching unread count:", error);
             }
-        };
+        }
+        fetchStripeConfig();
+    }, [accessToken, toast, router]);
 
-        fetchUnreadCount();
-    }, []);
-
-    // --- Fetch Initial Events and Payment Methods ---
+    // Fetch Unread Count
     useEffect(() => {
-        const fetchInitialData = async () => {
+        async function fetchUnreadCount() {
+            if (!accessToken) return;
             try {
-                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events");
+                const response = await fetch("/.netlify/functions/proxy/api/affiliate/notifications", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                    },
+                });
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token");
+                    }
+                    throw new Error("Failed to fetch notifications");
+                }
+                const data = await response.json();
+                const count = data.notifications.filter((n: any) => !n.read).length;
+                setUnreadCount(count);
+            } catch (error: any) {
+                console.error("Error fetching unread count:", error);
+                toast({
+                    title: "Error",
+                    description: error.message === "Unauthorized: Invalid or expired token"
+                        ? "Your session has expired. Please log in again."
+                        : "Failed to fetch notifications. Please try again.",
+                    variant: "destructive",
+                });
+                if (error.message === "Unauthorized: Invalid or expired token") {
+                    localStorage.removeItem("accessToken");
+                    router.replace("/onboarding");
+                }
+            }
+        }
+        fetchUnreadCount();
+    }, [accessToken, toast, router]);
+
+    // Fetch Initial Events and Payment Methods and Set Up WebSockets
+    useEffect(() => {
+        async function fetchInitialData() {
+            if (!accessToken) return;
+            try {
+                const eventsResponse = await fetch("/.netlify/functions/proxy/api/affiliate/events", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                    },
+                });
                 if (!eventsResponse.ok) {
-                    throw new Error("Failed to fetch initial events.");
+                    if (eventsResponse.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token");
+                    }
+                    throw new Error("Failed to fetch initial events");
                 }
                 const eventsData = await eventsResponse.json();
-                // Ensure event.network exists before setting events to avoid future crashes
                 const validEvents = eventsData.events.filter((e: AffiliateEvent) => e.network);
                 setEvents(validEvents);
 
-                const methodsResponse = await fetch("/.netlify/functions/proxy/payments/methods"); 
-                if (methodsResponse.ok) {
-                    const methodsData = await methodsResponse.json();
-                    
-                    const mappedMethods = methodsData.map((method: any) => ({
-                        ...method,
-                        icon: getPaymentMethodIcon(method.type),
-                        minimumAmount: method.minimumAmount || (method.type === "card" ? 100 : method.type === "bank" ? 100 : 50),
-                        processingTime: method.processingTime || (method.type === "card" ? "1-3 business days" : method.type === "bank" ? "1-3 business days" : "Instant"),
-                        fees: method.fees || (method.type === "card" ? "1% fee" : method.type === "bank" ? "Free" : "2.9% + $0.30"),
-                        details: method.details.last4 ? `****${method.details.last4}` : method.details.email || method.details.address || `Type: ${method.type}`,
-                        name: method.name || `${method.type.charAt(0).toUpperCase() + method.type.slice(1)}`,
-                    }));
-
-                    setPaymentMethods(mappedMethods);
-                } else {
-                    console.error("Failed to fetch payment methods.");
+                const methodsResponse = await fetch("/.netlify/functions/proxy/payments/methods", {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                    },
+                });
+                if (!methodsResponse.ok) {
+                    if (methodsResponse.status === 401) {
+                        throw new Error("Unauthorized: Invalid or expired token");
+                    }
+                    throw new Error("Failed to fetch payment methods");
                 }
-
-            } catch (error) {
+                const methodsData = await methodsResponse.json();
+                const mappedMethods = methodsData.map((method: any) => ({
+                    ...method,
+                    icon: getPaymentMethodIcon(method.type),
+                    minimumAmount: method.minimumAmount || (method.type === "card" ? 100 : method.type === "bank" ? 100 : 50),
+                    processingTime: method.processingTime || (method.type === "card" ? "1-3 business days" : method.type === "bank" ? "1-3 business days" : "Instant"),
+                    fees: method.fees || (method.type === "card" ? "1% fee" : method.type === "bank" ? "Free" : "2.9% + $0.30"),
+                    details: method.details.last4 ? `****${method.details.last4}` : method.details.email || method.details.address || `Type: ${method.type}`,
+                    name: method.name || `${method.type.charAt(0).toUpperCase() + method.type.slice(1)}`,
+                }));
+                setPaymentMethods(mappedMethods);
+            } catch (error: any) {
                 console.error("Error fetching initial data:", error);
+                toast({
+                    title: "Error",
+                    description: error.message === "Unauthorized: Invalid or expired token"
+                        ? "Your session has expired. Please log in again."
+                        : "Failed to fetch payment data. Please try again.",
+                    variant: "destructive",
+                });
+                if (error.message === "Unauthorized: Invalid or expired token") {
+                    localStorage.removeItem("accessToken");
+                    router.replace("/onboarding");
+                }
                 setEvents([]);
             }
-        };
-
+        }
         fetchInitialData();
 
-        // Set up WebSockets for real-time events (Keeping original WebSocket logic)
+        // Set up WebSockets for real-time events
         const connectedNetworks = [
             { id: "amazon-associates", name: "amazon-associates", logo: "📦" },
             { id: "shareasale", name: "shareasale", logo: "🛒" },
@@ -214,73 +296,113 @@ export default function PaymentsPage() {
         ];
 
         const websockets: WebSocket[] = [];
-
         connectedNetworks.forEach((network) => {
             const websocket = new WebSocket(`ws://localhost:8000/api/affiliate/ws/${network.id}-events`);
             websockets.push(websocket);
 
             websocket.onopen = () => {
                 console.log(`WebSocket connected for ${network.id}`);
-            };
-
-            websocket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                const notificationEvent: AffiliateEvent = {
-                    ...data.notification,
-                    event: data.notification.type,
-                    network: data.notification.network, // Ensure network is pulled from notification if missing from event
-                    amount: data.notification.amount || data.event.amount,
-                    commissionAmount: data.event.commissionAmount,
-                    date: data.notification.created_at,
-                };
-                console.log("WebSocket event received:", notificationEvent);
-                setEvents((prev) => [notificationEvent, ...prev]);
-
-                if (!notificationEvent.read) {
-                    setUnreadCount((prev) => prev + 1);
+                if (accessToken) {
+                    websocket.send(JSON.stringify({ token: accessToken }));
+                } else {
+                    console.error(`No access token available for ${network.id} WebSocket`);
+                    toast({
+                        title: "WebSocket Authentication Error",
+                        description: "No access token available. Please log in again.",
+                        variant: "destructive",
+                    });
+                    router.replace("/onboarding");
                 }
             };
 
-            websocket.onclose = () => {
-                console.log(`WebSocket disconnected for ${network.id}`);
+            websocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.error) {
+                        console.error(`WebSocket error for ${network.id}: ${data.error}`);
+                        toast({
+                            title: "WebSocket Error",
+                            description: data.error,
+                            variant: "destructive",
+                        });
+                        if (data.error.includes("Invalid token") || data.error.includes("No token")) {
+                            localStorage.removeItem("accessToken");
+                            router.replace("/onboarding");
+                        }
+                        return;
+                    }
+                    const notificationEvent: AffiliateEvent = {
+                        ...data.notification,
+                        event: data.notification.type,
+                        network: data.notification.network,
+                        amount: data.notification.amount || data.event.amount,
+                        commissionAmount: data.event.commissionAmount,
+                        date: data.notification.created_at,
+                    };
+                    console.log("WebSocket event received:", notificationEvent);
+                    setEvents((prev) => [notificationEvent, ...prev].slice(0, 100));
+                    if (!notificationEvent.read) {
+                        setUnreadCount((prev) => prev + 1);
+                    }
+                } catch (error) {
+                    console.error(`Error parsing WebSocket message for ${network.id}:`, error);
+                    toast({
+                        title: "WebSocket Error",
+                        description: "Failed to parse real-time update. Please try again.",
+                        variant: "destructive",
+                    });
+                }
+            };
+
+            websocket.onclose = (event) => {
+                console.log(`WebSocket disconnected for ${network.id}, code: ${event.code}, reason: ${event.reason}`);
+                if (event.code === 4001) {
+                    toast({
+                        title: "WebSocket Authentication Failed",
+                        description: "Invalid or missing token. Please log in again.",
+                        variant: "destructive",
+                    });
+                    localStorage.removeItem("accessToken");
+                    router.replace("/onboarding");
+                }
             };
 
             websocket.onerror = (error) => {
                 console.error(`WebSocket error for ${network.id}:`, error);
+                toast({
+                    title: "WebSocket Connection Error",
+                    description: "Failed to connect to real-time updates. Please try again.",
+                    variant: "destructive",
+                });
             };
         });
 
         return () => {
             websockets.forEach((ws) => ws.close());
         };
-    }, []);
+    }, [accessToken, toast, router]);
 
-    // Utility function needed for component logic
+    // Utility function for payment method icons
     const getPaymentMethodIcon = (type: string) => {
         switch (type) {
             case "bank":
-                return Landmark
+                return Landmark;
             case "paypal":
-                return Smartphone
+                return Smartphone;
             case "crypto":
-                return Bitcoin
+                return Bitcoin;
             case "card":
-                return CreditCard
+                return CreditCard;
             default:
-                return CreditCard
+                return CreditCard;
         }
-    }
+    };
 
-    // --- Calculate Wallet Data ---
+    // Calculate Wallet Data
     useEffect(() => {
         const calculateWalletData = () => {
-            const networkBreakdownMap: { [key: string]: { balance: number; pending: number } } = {
-                "amazon-associates": { balance: 0, pending: 0 },
-                "shareasale": { balance: 0, pending: 0 },
-                "commission-junction": { balance: 0, pending: 0 },
-                "clickbank": { balance: 0, pending: 0 },
-            };
-            let totalEarnings = 0; // Total money ever earned (commissions/conversions)
+            const networkBreakdownMap: { [key: string]: { balance: number; pending: number } } = {};
+            let totalEarnings = 0;
             let totalWithdrawals = 0;
             let pendingBalance = 0;
             let thisMonthRevenue = 0;
@@ -289,7 +411,7 @@ export default function PaymentsPage() {
             const monthlyRevenues: { [key: string]: number } = {};
 
             const now = new Date();
-            const currentMonth = now.getFullYear() + '-' + (now.getMonth() + 1).toString().padStart(2, '0');
+            const currentMonth = now.getFullYear() + "-" + (now.getMonth() + 1).toString().padStart(2, "0");
             const sixMonthsAgo = new Date(now.setMonth(now.getMonth() - 6));
 
             let rangeStart: Date;
@@ -328,42 +450,36 @@ export default function PaymentsPage() {
 
             let currentPeriodEarnings = 0;
             let previousPeriodEarnings = 0;
-            let totalAvailableBalance = 0; // Temp tracker for all money eligible for withdrawal
+            let totalAvailableBalance = 0;
 
             events.forEach((event) => {
-                // Use commissionAmount for conversion/commission events if available, otherwise fallback to amount.
-                // This ensures we capture the correct earned amount.
-                const earnedAmount = (event.event === "commission" || event.event === "conversion") 
-                    ? (event.commissionAmount ?? event.amount) 
-                    : event.amount;
-
-                if (!event.date || typeof earnedAmount !== 'number' || !event.network) {
-                    return; // Skip invalid events
+                const earnedAmount = event.event === "commission" ? event.amount : event.commissionAmount ?? event.amount;
+                if (!event.date || typeof earnedAmount !== "number" || !event.network) {
+                    console.log("Skipping invalid event:", event);
+                    return;
                 }
 
                 const eventDate = new Date(event.date);
-                const eventMonth = eventDate.getFullYear() + '-' + (eventDate.getMonth() + 1).toString().padStart(2, '0');
-                const network = event.network.toLowerCase().replace(/ /g, '-'); // Use normalized network ID
+                const eventMonth = eventDate.getFullYear() + "-" + (eventDate.getMonth() + 1).toString().padStart(2, "0");
+                const network = event.network.toLowerCase().replace(/ /g, "-");
 
-                // Initialize network entry if it doesn't exist
                 if (!networkBreakdownMap[network]) {
                     networkBreakdownMap[network] = { balance: 0, pending: 0 };
                 }
 
-                if (event.event === "commission" || event.event === "conversion") {
-                    totalEarnings += earnedAmount; // Accumulate all earnings for Total Earnings metric
+                console.log(`Processing event: type=${event.event}, network=${network}, amount=${earnedAmount}, status=${event.status}, date=${event.date}`);
 
-                    // Logic for wallet breakdown
-                    if (event.status === "Pending" || (event.event === "conversion" && event.status !== "Completed")) {
+                if (event.event === "commission" || event.event === "conversion") {
+                    totalEarnings += earnedAmount;
+                    const isPending = event.status === "Pending" || (event.event === "conversion" && event.status !== "Completed");
+                    if (isPending) {
                         networkBreakdownMap[network].pending += earnedAmount;
                         pendingBalance += earnedAmount;
                     } else {
-                        // Assuming "commission" events are immediately available unless marked "Pending"
                         networkBreakdownMap[network].balance += earnedAmount;
-                        totalAvailableBalance += earnedAmount; 
+                        totalAvailableBalance += earnedAmount;
                     }
 
-                    // For monthly metrics
                     if (eventMonth === currentMonth) {
                         thisMonthRevenue += earnedAmount;
                         currentMonthEarnings += earnedAmount;
@@ -374,7 +490,6 @@ export default function PaymentsPage() {
                     }
                     monthlyRevenues[eventMonth] += earnedAmount;
 
-                    // For time range comparison (Total Balance Change calculation)
                     if (eventDate >= rangeStart && eventDate <= rangeEnd) {
                         currentPeriodEarnings += earnedAmount;
                     }
@@ -386,40 +501,24 @@ export default function PaymentsPage() {
                         previousMonthEarnings += earnedAmount;
                     }
                 } else if (event.event === "payout" && event.status === "Completed") {
-                    // Payout events reduce the available balance and accumulate total withdrawals
-                    const payoutAmount = Math.abs(earnedAmount); // Payout amount is usually negative in mock data
+                    const payoutAmount = Math.abs(earnedAmount);
                     totalWithdrawals += payoutAmount;
-                    totalAvailableBalance -= payoutAmount; // Reduce the global available balance tracker
+                    // Subtract only from the network's balance
+                    if (networkBreakdownMap[network]) {
+                        networkBreakdownMap[network].balance = Math.max(0, networkBreakdownMap[network].balance - payoutAmount);
+                    }
+                    totalAvailableBalance -= payoutAmount;
                 }
             });
 
-            // After calculating all deposits (commissions) and withdrawals (payouts),
-            // calculate the final network balances by distributing the reduction.
-            // This is complex and usually handled by the backend ledger, so for the FE calculation,
-            // we will use the aggregated `totalAvailableBalance` for the main card.
-
-            // 1. Calculate the actual current total balance after all movements
-            const finalTotalBalance = totalAvailableBalance;
-
-            // 2. Adjust network breakdown map based on the reduction from payouts
-            //    (Simplified model: Payouts reduce the total Available Balance, not necessarily individual network balances in real-time on the FE)
-            //    We stick to the simplified method:
-            //    Network balance = sum of non-pending earnings from that network
-            //    Total Balance = sum of all network balances - total withdrawals.
             const totalNetworkBalanceBeforeWithdrawals = Object.values(networkBreakdownMap).reduce((sum, data) => sum + data.balance, 0);
-
-            // The correct total balance is Total Available Commissions - Total Payouts
-            const correctTotalAvailableBalance = totalNetworkBalanceBeforeWithdrawals - totalWithdrawals;
-
-            // Reset pending based on the loop count
+            const correctTotalAvailableBalance = totalNetworkBalanceBeforeWithdrawals;
             pendingBalance = Object.values(networkBreakdownMap).reduce((sum, data) => sum + data.pending, 0);
 
-
-            // Calculate the 6-month average
             let totalMonthlyRevenue = 0;
             let monthCount = 0;
             Object.keys(monthlyRevenues).forEach((month) => {
-                const monthDate = new Date(month + '-01');
+                const monthDate = new Date(month + "-01");
                 if (monthDate >= sixMonthsAgo) {
                     totalMonthlyRevenue += monthlyRevenues[month];
                     monthCount += 1;
@@ -427,31 +526,24 @@ export default function PaymentsPage() {
             });
             const averageMonthly = monthCount > 0 ? totalMonthlyRevenue / monthCount : thisMonthRevenue;
 
-
-            // Calculate period-over-period changes
             const totalBalanceChange = previousPeriodEarnings > 0
                 ? ((currentPeriodEarnings - previousPeriodEarnings) / previousPeriodEarnings * 100)
-                : (currentPeriodEarnings > 0 ? null : 0); // Null if new revenue > 0, 0 if both are 0
+                : (currentPeriodEarnings > 0 ? null : 0);
             const thisMonthChange = previousMonthEarnings > 0
                 ? ((currentMonthEarnings - previousMonthEarnings) / previousMonthEarnings * 100)
                 : (currentMonthEarnings > 0 ? null : 0);
 
-
-            // Final map for display
             const networkBreakdown = Object.entries(networkBreakdownMap)
                 .map(([network, data]) => ({
-                    network: network,
-                    // Note: Distributing the total payout across network balances is too complex for this component.
-                    // We will display the network's accumulated, available earnings before factoring in withdrawals.
-                    // The main "Total Balance" card will show the net available amount.
-                    balance: data.balance, 
+                    network,
+                    balance: data.balance,
                     pending: data.pending,
                 }))
-                .filter(network => network.balance > 0 || network.pending > 0 || ['clickbank', 'amazon-associates', 'shareasale', 'commission-junction'].includes(network.network));
+                .filter((network) => network.balance > 0 || network.pending > 0 || ["clickbank", "amazon-associates", "shareasale", "commission-junction"].includes(network.network));
 
             const nextPayoutDateObj = calculateNextPayoutDate(autoWithdrawalSettings.enabled, autoWithdrawalSettings.dayOfMonth);
             const nextPayoutDateString = nextPayoutDateObj
-                ? nextPayoutDateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                ? nextPayoutDateObj.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
                 : "N/A";
 
             console.log("Calculated wallet data:", {
@@ -463,19 +555,19 @@ export default function PaymentsPage() {
                 totalBalanceChange,
                 thisMonthChange,
                 networkBreakdown,
-                totalEarnings, // The fix: This should now match the total revenue from other pages
+                totalEarnings,
                 totalWithdrawals,
             });
 
             setWalletData({
-                totalBalance: correctTotalAvailableBalance, // This is the net balance
+                totalBalance: correctTotalAvailableBalance,
                 availableBalance: Math.max(0, correctTotalAvailableBalance),
                 pendingBalance,
                 thisMonth: Math.max(0, thisMonthRevenue),
                 averageMonthly: Math.max(0, averageMonthly),
                 nextPayoutDate: nextPayoutDateString,
-                totalEarnings: totalEarnings, // Use totalEarnings here for consistency with other dashboards
-                totalWithdrawals: totalWithdrawals,
+                totalEarnings,
+                totalWithdrawals,
                 totalBalanceChange,
                 thisMonthChange,
                 networkBreakdown,
@@ -485,7 +577,7 @@ export default function PaymentsPage() {
         calculateWalletData();
     }, [events, autoWithdrawalSettings.dayOfMonth, dateRange, autoWithdrawalSettings.enabled]);
 
-    // Helper function moved out of useEffect dependencies
+    // Helper function for next payout date
     const calculateNextPayoutDate = (enabled: boolean, dayOfMonth: number) => {
         if (!enabled || dayOfMonth <= 0) return null;
 
@@ -495,12 +587,10 @@ export default function PaymentsPage() {
         let nextYear = today.getFullYear();
 
         if (currentDay < dayOfMonth) {
-            // Payout is in the current month
             return new Date(nextYear, nextMonth, dayOfMonth);
         } else {
-            // Payout is next month
-            if (nextMonth === 11) { // December
-                nextMonth = 0; // January
+            if (nextMonth === 11) {
+                nextMonth = 0;
                 nextYear += 1;
             } else {
                 nextMonth += 1;
@@ -509,19 +599,18 @@ export default function PaymentsPage() {
         }
     };
 
-
     const getStatusColor = (status: string) => {
         switch (status) {
             case "verified":
-                return "text-green-500 bg-green-500/10 border-green-500/20"
+                return "text-green-500 bg-green-500/10 border-green-500/20";
             case "pending":
-                return "text-yellow-500 bg-yellow-500/10 border-yellow-500/20"
+                return "text-yellow-500 bg-yellow-500/10 border-yellow-500/20";
             case "failed":
-                return "text-red-500 bg-red-500/10 border-red-500/20"
+                return "text-red-500 bg-red-500/10 border-red-500/20";
             default:
-                return "text-gray-500 bg-gray-500/10 border-gray-500/20"
+                return "text-gray-500 bg-gray-500/10 border-gray-500/20";
         }
-    }
+    };
 
     const handleAddPaymentMethod = (method: any) => {
         setPaymentMethods((prev) => {
@@ -532,7 +621,7 @@ export default function PaymentsPage() {
                 details: method.details.last4 ? `****${method.details.last4}` : method.details.email || method.details.address || "",
                 isDefault: false,
                 status: method.status,
-                addedDate: new Date().toISOString().split('T')[0],
+                addedDate: new Date().toISOString().split("T")[0],
                 lastUsed: "Never",
                 minimumAmount: method.minimumAmount || (method.type === "card" ? 100 : method.type === "bank" ? 100 : 50),
                 processingTime: method.processingTime || (method.type === "card" ? "1-3 business days" : method.type === "bank" ? "1-3 business days" : "Instant"),
@@ -540,21 +629,20 @@ export default function PaymentsPage() {
                 icon: getPaymentMethodIcon(method.type),
             };
 
-            const existingIndex = prev.findIndex(m => m.id === newMethod.id);
+            const existingIndex = prev.findIndex((m) => m.id === newMethod.id);
             if (existingIndex !== -1) {
-                return prev.map((m, index) => index === existingIndex ? newMethod : m);
+                return prev.map((m, index) => (index === existingIndex ? newMethod : m));
             }
             return [newMethod, ...prev];
         });
         setShowAddPaymentMethod(false);
-    }
-    
-    // Handler function for the new dialog
+    };
+
     const handleSaveAutoWithdrawal = (newSettings: AutoWithdrawalSettings) => {
         setAutoWithdrawalSettings(newSettings);
     };
 
-    const selectedPaymentMethod = paymentMethods.find(m => m.id === autoWithdrawalSettings.paymentMethodId);
+    const selectedPaymentMethod = paymentMethods.find((m) => m.id === autoWithdrawalSettings.paymentMethodId);
 
     return (
         <Elements stripe={stripePromise}>
@@ -668,9 +756,9 @@ export default function PaymentsPage() {
                                 </div>
                                 {walletData.thisMonthChange !== null && (
                                     <div className="flex items-center mt-4">
-                                        <TrendingUp className={`w-4 h-4 mr-1 ${walletData.thisMonthChange >= 0 ? 'text-green-500' : 'text-red-500'}`} />
-                                        <span className={`text-sm font-medium ${walletData.thisMonthChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                            {walletData.thisMonthChange >= 0 ? '+' : ''}{walletData.thisMonthChange.toFixed(1)}%
+                                        <TrendingUp className={`w-4 h-4 mr-1 ${walletData.thisMonthChange >= 0 ? "text-green-500" : "text-red-500"}`} />
+                                        <span className={`text-sm font-medium ${walletData.thisMonthChange >= 0 ? "text-green-500" : "text-red-500"}`}>
+                                            {walletData.thisMonthChange >= 0 ? "+" : ""}{walletData.thisMonthChange.toFixed(1)}%
                                         </span>
                                         <span className="text-sm text-muted-foreground ml-1">from last month</span>
                                     </div>
@@ -704,28 +792,26 @@ export default function PaymentsPage() {
                         </CardHeader>
                         <CardContent>
                             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                                {walletData.networkBreakdown
-                                    // Use original networkBreakdown logic to filter and map
-                                    .map((network) => (
-                                        <div key={network.network} className="p-4 rounded-lg border bg-background/50">
-                                            <div className="flex items-center justify-between mb-2">
-                                                <h4 className="font-semibold text-sm">{network.network}</h4>
-                                                <Badge variant="outline" className="text-xs">
-                                                    Active
-                                                </Badge>
+                                {walletData.networkBreakdown.map((network) => (
+                                    <div key={network.network} className="p-4 rounded-lg border bg-background/50">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h4 className="font-semibold text-sm">{network.network}</h4>
+                                            <Badge variant="outline" className="text-xs">
+                                                Active
+                                            </Badge>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-sm">
+                                                <span className="text-muted-foreground">Available:</span>
+                                                <span className="font-medium">${network.balance.toLocaleString()}</span>
                                             </div>
-                                            <div className="space-y-1">
-                                                <div className="flex justify-between text-sm">
-                                                    <span className="text-muted-foreground">Available:</span>
-                                                    <span className="font-medium">${network.balance.toLocaleString()}</span>
-                                                </div>
-                                                <div className="flex justify-between text-sm">
-                                                    <span className="text-muted-foreground">Pending:</span>
-                                                    <span className="font-medium">${network.pending.toLocaleString()}</span>
-                                                </div>
+                                            <div className="flex justify-between text-sm">
+                                                <span className="text-muted-foreground">Pending:</span>
+                                                <span className="font-medium">${network.pending.toLocaleString()}</span>
                                             </div>
                                         </div>
-                                    ))}
+                                    </div>
+                                ))}
                             </div>
                         </CardContent>
                     </Card>
@@ -776,7 +862,11 @@ export default function PaymentsPage() {
                                                 <Plus className="w-4 h-4 mr-2" />
                                                 Add Payment Method
                                             </Button>
-                                            <Button variant="outline" className="w-full justify-start bg-transparent" onClick={() => setShowModifySchedule(true)}>
+                                            <Button
+                                                variant="outline"
+                                                className="w-full justify-start bg-transparent"
+                                                onClick={() => setShowModifySchedule(true)}
+                                            >
                                                 <Settings className="w-4 h-4 mr-2" />
                                                 Auto-Withdrawal Settings
                                             </Button>
@@ -861,7 +951,7 @@ export default function PaymentsPage() {
                                         <CardContent>
                                             <div className="space-y-4">
                                                 {paymentMethods.map((method) => {
-                                                    const IconComponent = method.icon
+                                                    const IconComponent = method.icon;
                                                     return (
                                                         <div
                                                             key={method.id}
@@ -911,7 +1001,7 @@ export default function PaymentsPage() {
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                    )
+                                                    );
                                                 })}
 
                                                 {paymentMethods.length === 0 && (
@@ -1142,8 +1232,8 @@ export default function PaymentsPage() {
                             onAdd={handleAddPaymentMethod}
                         />
                     )}
-                    
-                    {/* NEW: Modify Auto-Withdrawal Schedule Dialog */}
+
+                    {/* Modify Auto-Withdrawal Schedule Dialog */}
                     {showModifySchedule && (
                         <ModifyAutoWithdrawalDialog
                             onClose={() => setShowModifySchedule(false)}
@@ -1155,5 +1245,5 @@ export default function PaymentsPage() {
                 </div>
             </DashboardLayout>
         </Elements>
-    )
+    );
 }
